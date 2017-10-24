@@ -41,6 +41,39 @@ lazyModule(Func &&func)
         std::forward<Func>(func));
 }
 
+
+// global variables to pointers are pretty common,
+// so this method is available as a convenience for emitting them.
+// for other types, the formula for implementation is straightforward:
+// (see stringConstPtr, for an alternative example to the code below)
+//
+// if in imaging_mode, emit a GlobalVariable with the same name and an initializer to the shadow_module
+// making it valid for emission and reloading in the sysimage
+//
+// then add a global mapping to the current value (usually from calloc'd space)
+// to the execution engine to make it valid for the current session (with the current value)
+void* jl_emit_and_add_to_shadow(GlobalVariable *gv)
+{
+    // make a copy in the shadow_output
+    assert(imaging_mode);
+    PointerType *T = cast<PointerType>(gv->getValueType()); // pointer is the only supported type here
+    GlobalVariable *shadowvar = global_proto(gv, shadow_output);
+    shadowvar->setInitializer(ConstantPointerNull::get(T));
+    shadowvar->setLinkage(GlobalVariable::InternalLinkage);
+
+    // make the pointer valid for this session
+    void *slot = calloc(1, sizeof(void*));
+    jl_ExecutionEngine->addGlobalMapping(gv, slot);
+    return slot;
+}
+
+void* jl_get_globalvar(GlobalVariable *gv)
+{
+    void *p = (void*)(intptr_t)jl_ExecutionEngine->getPointerToGlobalIfAvailable(gv);
+    assert(p);
+    return p;
+}
+
 // Find or create the GVs for the library and symbol lookup.
 // Return `runtime_lib` (whether the library name is a string)
 // Optionally return the symbol address in the current session
@@ -214,6 +247,8 @@ static DenseMap<AttributeSet,
                 std::map<std::tuple<GlobalVariable*,FunctionType*,
                                     CallingConv::ID>,GlobalVariable*>> allPltMap;
 
+void jl_add_to_shadow(Module *m);
+
 // Emit a "PLT" entry that will be lazily initialized
 // when being called the first time.
 static GlobalVariable *emit_plt_thunk(
@@ -236,7 +271,6 @@ static GlobalVariable *emit_plt_thunk(
     Function *plt = Function::Create(functype,
                                      GlobalVariable::ExternalLinkage,
                                      fname, M);
-    jl_init_function(plt);
     plt->setAttributes(attrs);
     if (cc != CallingConv::C)
         plt->setCallingConv(cc);
@@ -286,7 +320,8 @@ static GlobalVariable *emit_plt_thunk(
     }
     irbuilder.ClearInsertionPoint();
     got = global_proto(got); // exchange got for the permanent global before jl_finalize_module destroys it
-    jl_finalize_module(M, true);
+    jl_add_to_shadow(M);
+    jl_finalize_module(std::unique_ptr<Module>(M));
 
     auto shadowgot =
         cast<GlobalVariable>(shadow_output->getNamedValue(gname));
@@ -1110,11 +1145,9 @@ static jl_cgval_t emit_llvmcall(jl_codectx_t &ctx, jl_value_t **args, size_t nar
         std::stringstream name;
         name << "jl_llvmcall" << llvmcallnumbering++;
         f->setName(name.str());
-        jl_init_function(f);
         f = cast<Function>(prepare_call(function_proto(f)));
     }
     else {
-        jl_init_function(f);
         f->setLinkage(GlobalValue::LinkOnceODRLinkage);
     }
 
@@ -1740,44 +1773,6 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
         ctx.builder.SetInsertPoint(contBB);
         return ghostValue(jl_void_type);
     }
-    else if (is_libjulia_func(jl_function_ptr)) {
-        assert(!isVa && !llvmcall && nargt == 3);
-        assert(lrt == T_size);
-        jl_value_t *f = argv[0].constant;
-        jl_value_t *frt = argv[1].constant;
-        if (!frt) {
-            if (jl_is_type_type(argv[1].typ) && !jl_has_free_typevars(argv[1].typ))
-                frt = jl_tparam0(argv[1].typ);
-        }
-        if (f && frt) {
-            jl_value_t *fargt = argv[2].constant;;
-            JL_GC_PUSH1(&fargt);
-            if (!fargt && jl_is_type_type(argv[2].typ)) {
-                if (!jl_has_free_typevars(argv[2].typ))
-                    fargt = jl_tparam0(argv[2].typ);
-            }
-            else if (fargt && jl_is_tuple(fargt)) {
-                // TODO: maybe deprecation warning, better checking
-                fargt = (jl_value_t*)jl_apply_tuple_type_v((jl_value_t**)jl_data_ptr(fargt), jl_nfields(fargt));
-            }
-            if (fargt && jl_is_tuple_type(fargt)) {
-                Value *llvmf = NULL;
-                JL_TRY {
-                    llvmf = jl_cfunction_object((jl_function_t*)f, frt, (jl_tupletype_t*)fargt);
-                }
-                JL_CATCH {
-                    llvmf = NULL;
-                }
-                if (llvmf) {
-                    JL_GC_POP();
-                    JL_GC_POP();
-                    Value *fptr = ctx.builder.CreatePtrToInt(prepare_call(llvmf), lrt);
-                    return mark_or_box_ccall_result(ctx, fptr, retboxed, rt, unionall, static_rt);
-                }
-            }
-            JL_GC_POP();
-        }
-    }
     else if (is_libjulia_func(jl_array_isassigned) &&
              argv[1].typ == (jl_value_t*)jl_ulong_type) {
         assert(!isVa && !llvmcall && nargt == 2 && !addressOf.at(0) && !addressOf.at(1));
@@ -1979,7 +1974,7 @@ jl_cgval_t function_sig_t::emit_a_ccall(
     }
     else if (symarg.fptr != NULL) {
         Type *funcptype = PointerType::get(functype, 0);
-        llvmf = literal_static_pointer_val(ctx, (void*)(uintptr_t)symarg.fptr, funcptype);
+        llvmf = literal_static_pointer_val((void*)(uintptr_t)symarg.fptr, funcptype);
         if (imaging_mode)
             jl_printf(JL_STDERR,"WARNING: literal address used in ccall for %s; code cannot be statically compiled\n", symarg.f_name);
     }
@@ -2013,7 +2008,7 @@ jl_cgval_t function_sig_t::emit_a_ccall(
             }
             // since we aren't saving this code, there's no sense in
             // putting anything complicated here: just JIT the function address
-            llvmf = literal_static_pointer_val(ctx, symaddr, funcptype);
+            llvmf = literal_static_pointer_val(symaddr, funcptype);
         }
     }
 

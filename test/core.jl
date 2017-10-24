@@ -4736,9 +4736,9 @@ end
 cfunction(f18054, Cint, Tuple{})
 
 # issue #18986: the ccall optimization of cfunction leaves JL_TRY stack in bad state
-dummy18996() = return nothing
+dummy18986() = return nothing
 function main18986()
-    cfunction(dummy18986, Cvoid, ())
+    cfunction(dummy18986, Cvoid, Tuple{})
     ccall((:dummy2, "this_is_a_nonexisting_library"), Cvoid, ())
 end
 @test_throws ErrorException main18986()

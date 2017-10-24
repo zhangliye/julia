@@ -159,19 +159,6 @@ struct strrefcomp {
     }
 };
 
-extern "C" tracer_cb jl_linfo_tracer;
-static std::vector<jl_method_instance_t*> triggered_linfos;
-void jl_callback_triggered_linfos(void)
-{
-    if (triggered_linfos.empty())
-        return;
-    if (jl_linfo_tracer) {
-        std::vector<jl_method_instance_t*> to_process(std::move(triggered_linfos));
-        for (jl_method_instance_t *linfo : to_process)
-            jl_call_tracer(jl_linfo_tracer, (jl_value_t*)linfo);
-    }
-}
-
 class JuliaJITEventListener: public JITEventListener
 {
     std::map<size_t, ObjectInfo, revcomp> objectmap;
@@ -378,20 +365,7 @@ public:
             jl_method_instance_t *linfo = NULL;
             if (linfo_it != linfo_in_flight.end()) {
                 linfo = linfo_it->second;
-                if (linfo->compile_traced)
-                    triggered_linfos.push_back(linfo);
                 linfo_in_flight.erase(linfo_it);
-                const char *F = linfo->functionObjectsDecls.functionObject;
-                if (!linfo->fptr && F && sName.equals(F)) {
-                    int jlcall_api = jl_jlcall_api(F);
-                    if (linfo->inferred || jlcall_api != JL_API_GENERIC) {
-                        linfo->jlcall_api = jlcall_api;
-                        linfo->fptr = (jl_fptr_t)(uintptr_t)Addr;
-                    }
-                    else {
-                        linfo->unspecialized_ducttape = (jl_fptr_t)(uintptr_t)Addr;
-                    }
-                }
             }
             if (linfo)
                 linfomap[Addr] = std::make_pair(Size, linfo);

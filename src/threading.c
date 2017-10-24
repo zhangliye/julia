@@ -309,7 +309,7 @@ static jl_value_t *ti_run_fun(const jl_generic_fptr_t *fptr, jl_method_instance_
     jl_ptls_t ptls = jl_get_ptls_states();
     JL_TRY {
         (void)jl_assume(fptr->jlcall_api != JL_API_CONST);
-        jl_call_fptr_internal(fptr, mfunc, args, nargs);
+        jl_call_fptr_internal(*fptr, mfunc, args, nargs);
     }
     JL_CATCH {
         // Lock this output since we know it'll likely happen on multiple threads
@@ -694,8 +694,9 @@ JL_DLLEXPORT jl_value_t *jl_threading_run(jl_value_t *_args)
     threadwork.command = TI_THREADWORK_RUN;
     threadwork.mfunc = jl_lookup_generic(args, nargs,
                                          jl_int32hash_fast(jl_return_address()), ptls->world_age);
-    // Ignore constant return value for now.
-    if (jl_compile_method_internal(&threadwork.fptr, threadwork.mfunc))
+    threadwork.fptr = jl_compile_method_internal(threadwork.mfunc);
+    if (threadwork.fptr.jlcall_api == JL_API_CONST)
+        // Ignore constant return value for now.
         return jl_nothing;
     threadwork.args = args;
     threadwork.nargs = nargs;
@@ -809,8 +810,9 @@ JL_DLLEXPORT jl_value_t *jl_threading_run(jl_value_t *_args)
     jl_method_instance_t *mfunc = jl_lookup_generic(args, nargs,
                                                     jl_int32hash_fast(jl_return_address()),
                                                     jl_get_ptls_states()->world_age);
-    jl_generic_fptr_t fptr;
-    if (jl_compile_method_internal(&fptr, mfunc))
+    jl_generic_fptr_t fptr = jl_compile_method_internal(mfunc);
+    if (fptr.jlcall_api == JL_API_CONST)
+        // Ignore constant return value for now.
         return jl_nothing;
     return ti_run_fun(&fptr, mfunc, args, nargs);
 }

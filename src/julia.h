@@ -221,17 +221,12 @@ JL_EXTENSION typedef struct {
     union {
         jl_fptr_t fptr;
         jl_fptr_t fptr1;
-        // constant fptr2;
+        jl_value_t *constant_2;
         jl_fptr_sparam_t fptr3;
         jl_fptr_linfo_t fptr4;
     };
     uint8_t jlcall_api;
 } jl_generic_fptr_t;
-
-typedef struct _jl_llvm_functions_t {
-    const char *functionObject;     // jlcall llvm Function name
-    const char *specFunctionObject; // specialized llvm Function name
-} jl_llvm_functions_t;
 
 // This type describes a single function body
 typedef struct _jl_code_info_t {
@@ -307,13 +302,10 @@ typedef struct _jl_method_instance_t {
     size_t max_world;
     uint8_t inInference; // flags to tell if inference is running on this function
     uint8_t jlcall_api;
-    uint8_t compile_traced; // if set will notify callback if this linfo is compiled
-    jl_fptr_t fptr; // jlcall entry point with api specified by jlcall_api
-    jl_fptr_t unspecialized_ducttape; // if template can't be compiled due to intrinsics, an un-inferred fptr may get stored here, jlcall_api = JL_API_GENERIC
-
-    // names of declarations in the JIT,
-    // suitable for referencing in LLVM IR
-    jl_llvm_functions_t functionObjectsDecls;
+    uint8_t compile_traced; // if set, will notify callback if this linfo is compiled
+    // jlcall entry point with api specified by jlcall_api
+    jl_fptr_t fptr;
+    jl_fptr_t fptr_specsig;
 } jl_method_instance_t;
 
 // all values are callable as Functions
@@ -1077,6 +1069,9 @@ STATIC_INLINE int jl_is_concrete_type(jl_value_t *v) JL_NOTSAFEPOINT
     return jl_is_datatype(v) && ((jl_datatype_t*)v)->isconcretetype;
 }
 
+JL_DLLEXPORT int jl_is_cacheable_sig(
+    jl_tupletype_t *type, jl_tupletype_t *decl, jl_method_t *definition);
+
 // type constructors
 JL_DLLEXPORT jl_typename_t *jl_new_typename_in(jl_sym_t *name, jl_module_t *inmodule);
 JL_DLLEXPORT jl_tvar_t *jl_new_typevar(jl_sym_t *name, jl_value_t *lb, jl_value_t *ub);
@@ -1430,7 +1425,7 @@ JL_DLLEXPORT const char *jl_pathname_for_handle(void *handle);
 JL_DLLEXPORT int jl_deserialize_verify_header(ios_t *s);
 JL_DLLEXPORT void jl_preload_sysimg_so(const char *fname);
 JL_DLLEXPORT void jl_set_sysimg_so(void *handle);
-JL_DLLEXPORT ios_t *jl_create_system_image(void);
+JL_DLLEXPORT ios_t *jl_create_system_image(void *);
 JL_DLLEXPORT void jl_save_system_image(const char *fname);
 JL_DLLEXPORT void jl_restore_system_image(const char *fname);
 JL_DLLEXPORT void jl_restore_system_image_data(const char *buf, size_t len);
@@ -1792,7 +1787,6 @@ typedef struct {
     const char *bindto;
     const char *outputbc;
     const char *outputunoptbc;
-    const char *outputjitbc;
     const char *outputo;
     const char *outputji;
     int8_t incremental;
@@ -1899,8 +1893,6 @@ typedef struct {
 // codegen interface ----------------------------------------------------------
 
 typedef struct {
-    int cached;             // can the compiler use/populate the compilation cache?
-
     int track_allocations;  // can we track allocations?
     int code_coverage;      // can we measure coverage?
     int static_alloc;       // is the compiler allowed to allocate statically?

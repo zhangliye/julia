@@ -236,11 +236,9 @@ JL_DLLEXPORT jl_method_instance_t *jl_new_method_instance_uninit(void)
     li->sparam_vals = jl_emptysvec;
     li->backedges = NULL;
     li->fptr = NULL;
-    li->unspecialized_ducttape = NULL;
+    li->fptr_specsig = NULL;
     li->jlcall_api = 0;
     li->compile_traced = 0;
-    li->functionObjectsDecls.functionObject = NULL;
-    li->functionObjectsDecls.specFunctionObject = NULL;
     li->specTypes = NULL;
     li->inInference = 0;
     li->def.value = NULL;

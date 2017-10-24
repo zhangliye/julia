@@ -1538,7 +1538,6 @@ static jl_value_t *jl_deserialize_value_method_instance(jl_serializer_state *s, 
     li->backedges = (jl_array_t*)jl_deserialize_value(s, (jl_value_t**)&li->backedges);
     if (li->backedges)
         jl_gc_wb(li, li->backedges);
-    li->unspecialized_ducttape = NULL;
     if (internal == 1) {
         li->min_world = 0;
         li->max_world = 0;
@@ -1555,11 +1554,15 @@ static jl_value_t *jl_deserialize_value_method_instance(jl_serializer_state *s, 
         assert(0 && "corrupt deserialization state");
         abort();
     }
-    li->functionObjectsDecls.functionObject = NULL;
-    li->functionObjectsDecls.specFunctionObject = NULL;
     li->inInference = 0;
     li->fptr = NULL;
+    li->fptr_specsig = NULL;
     li->jlcall_api = read_int8(s->s);
+    if (li->jlcall_api == JL_API_CONST) {
+        li->fptr = (jl_fptr_t)(void*)li->inferred_const;
+        if (!li->fptr) // corrupt?
+            li->jlcall_api = 0;
+    }
     li->compile_traced = 0;
     return (jl_value_t*)li;
 }

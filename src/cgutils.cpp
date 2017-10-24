@@ -240,30 +240,36 @@ static Value *emit_pointer_from_objref(jl_codectx_t &ctx, Value *V)
 
 // --- emitting pointers directly into code ---
 
-static Constant *literal_static_pointer_val(jl_codectx_t &ctx, const void *p, Type *T = T_pjlvalue)
-{
-    // this function will emit a static pointer into the generated code
-    // the generated code will only be valid during the current session,
-    // and thus, this should typically be avoided in new API's
-#if defined(_P64)
-    return ConstantExpr::getIntToPtr(ConstantInt::get(T_int64, (uint64_t)p), T);
-#else
-    return ConstantExpr::getIntToPtr(ConstantInt::get(T_int32, (uint32_t)p), T);
-#endif
-}
 
+static inline Constant *literal_static_pointer_val(const void *p, Type *T = T_pjlvalue);
 
 static Value *julia_pgv(jl_codectx_t &ctx, const char *cname, void *addr)
 {
-    // emit a GlobalVariable for a jl_value_t named "cname"
-    return jl_get_global_for(cname, addr, jl_Module);
+    // first see if there already is a GlobalVariable for this address
+    GlobalVariable* &gv = ctx.global_targets[addr];
+    Module *M = jl_Module;
+    if (!gv) {
+        // otherwise emit a new GlobalVariable for a jl_value_t named "cname"
+        std::stringstream gvname;
+        gvname << cname << globalUnique++;
+        // no existing GlobalVariable, create one and store it
+        gv = new GlobalVariable(*M, T_pjlvalue,
+                                false, GlobalVariable::ExternalLinkage,
+                                NULL, gvname.str());
+    }
+    else if (gv->getParent() != M) {
+        // re-use the same name, but move it to the new module
+        // this will help simplify merging them later
+        gv = prepare_global_in(M, gv);
+    }
+    return gv;
 }
 
 static Value *julia_pgv(jl_codectx_t &ctx, const char *prefix, jl_sym_t *name, jl_module_t *mod, void *addr)
 {
     // emit a GlobalVariable for a jl_value_t, using the prefix, name, and module to
     // to create a readable name of the form prefixModA.ModB.name
-    size_t len = strlen(jl_symbol_name(name))+strlen(prefix)+1;
+    size_t len = strlen(jl_symbol_name(name)) + strlen(prefix) + 1;
     jl_module_t *parent = mod, *prev = NULL;
     while (parent != NULL && parent != prev) {
         len += strlen(jl_symbol_name(parent->name))+1;
@@ -272,15 +278,14 @@ static Value *julia_pgv(jl_codectx_t &ctx, const char *prefix, jl_sym_t *name, j
     }
     char *fullname = (char*)alloca(len);
     strcpy(fullname, prefix);
-    int skipfirst = jl_symbol_name(name)[0] == '@';
-    len -= strlen(jl_symbol_name(name)) + 1 - skipfirst;
-    strcpy(fullname + len, jl_symbol_name(name) + skipfirst);
+    len -= strlen(jl_symbol_name(name)) + 1;
+    strcpy(fullname + len, jl_symbol_name(name));
     parent = mod;
     prev = NULL;
     while (parent != NULL && parent != prev) {
-        size_t part = strlen(jl_symbol_name(parent->name))+1-skipfirst;
-        strcpy(fullname+len-part,jl_symbol_name(parent->name)+skipfirst);
-        fullname[len-1] = '.';
+        size_t part = strlen(jl_symbol_name(parent->name)) + 1;
+        strcpy(fullname + len - part, jl_symbol_name(parent->name));
+        fullname[len - 1] = '.';
         len -= part;
         prev = parent;
         parent = parent->parent;
@@ -297,7 +302,7 @@ static Value *literal_pointer_val_slot(jl_codectx_t &ctx, jl_value_t *p)
         Module *M = jl_Module;
         GlobalVariable *gv = new GlobalVariable(
                 *M, T_pjlvalue, true, GlobalVariable::PrivateLinkage,
-                literal_static_pointer_val(ctx, p));
+                literal_static_pointer_val(p));
         gv->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
         return gv;
     }
@@ -388,7 +393,7 @@ static Value *literal_pointer_val(jl_codectx_t &ctx, jl_value_t *p)
     if (p == NULL)
         return V_null;
     if (!imaging_mode)
-        return literal_static_pointer_val(ctx, p);
+        return literal_static_pointer_val(p);
     Value *pgv = literal_pointer_val_slot(ctx, p);
     return tbaa_decorate(tbaa_const, maybe_mark_load_dereferenceable(
                              ctx.builder.CreateLoad(T_pjlvalue, pgv), false, jl_typeof(p)));
@@ -400,7 +405,7 @@ static Value *literal_pointer_val(jl_codectx_t &ctx, jl_binding_t *p)
     if (p == NULL)
         return V_null;
     if (!imaging_mode)
-        return literal_static_pointer_val(ctx, p);
+        return literal_static_pointer_val(p);
     // bindings are prefixed with jl_bnd#
     Value *pgv = julia_pgv(ctx, "jl_bnd#", p->name, p->owner, p);
     return tbaa_decorate(tbaa_const, maybe_mark_load_dereferenceable(
@@ -447,7 +452,7 @@ static Value *julia_binding_gv(jl_codectx_t &ctx, jl_binding_t *b)
                               ctx.builder.CreateLoad(T_pjlvalue, julia_pgv(ctx, "*", b->name, b->owner, b))),
                 T_pprjlvalue);
     else
-        bv = ConstantExpr::getBitCast(literal_static_pointer_val(ctx, b), T_pprjlvalue);
+        bv = ConstantExpr::getBitCast(literal_static_pointer_val(b), T_pprjlvalue);
     return julia_binding_gv(ctx, bv);
 }
 
@@ -2521,7 +2526,7 @@ static Value *emit_defer_signal(jl_codectx_t &ctx)
 
 static int compare_cgparams(const jl_cgparams_t *a, const jl_cgparams_t *b)
 {
-    return (a->cached == b->cached) &&
+    return
            // language features
            (a->track_allocations == b->track_allocations) &&
            (a->code_coverage == b->code_coverage) &&
