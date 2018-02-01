@@ -15,6 +15,7 @@ mutable struct OptimizationState
     min_valid::UInt
     max_valid::UInt
     params::Params
+    sp::SimpleVector # static parameters
     function OptimizationState(frame::InferenceState)
         s_edges = frame.stmt_edges[1]
         if s_edges === ()
@@ -26,7 +27,7 @@ mutable struct OptimizationState
                    s_edges::Vector{Any},
                    frame.src, frame.mod, frame.nargs,
                    next_label, frame.min_valid, frame.max_valid,
-                   frame.params)
+                   frame.params, frame.sp)
     end
     function OptimizationState(linfo::MethodInstance, src::CodeInfo,
                                params::Params)
@@ -58,7 +59,7 @@ mutable struct OptimizationState
                    src, inmodule, nargs,
                    next_label,
                    min_world(linfo), max_world(linfo),
-                   params)
+                   params, spvals_from_meth_instance(linfo))
     end
 end
 
@@ -237,10 +238,10 @@ const EMPTY_DEFS = ValueDef[]
 # logic #
 #########
 
-function isinlineable(m::Method, src::CodeInfo, mod::Module, params::Params, bonus::Int=0)
+function isinlineable(m::Method, me::InferenceState, bonus::Int=0)
     # compute the cost (size) of inlining this code
     inlineable = false
-    cost_threshold = params.inline_cost_threshold
+    cost_threshold = me.params.inline_cost_threshold
     if m.module === _topmod(m.module)
         # a few functions get special treatment
         name = m.name
@@ -255,7 +256,7 @@ function isinlineable(m::Method, src::CodeInfo, mod::Module, params::Params, bon
         end
     end
     if !inlineable
-        inlineable = inline_worthy(src.code, src, mod, params, cost_threshold + bonus)
+        inlineable = inline_worthy(me.src.code, me.src, me.sp, me.params, cost_threshold + bonus)
     end
     return inlineable
 end
@@ -319,7 +320,7 @@ function optimize(me::InferenceState)
         if length(me.src.code) < 10
             proven_pure = true
             for stmt in me.src.code
-                if !statement_effect_free(stmt, me.src, me.mod)
+                if !statement_effect_free(stmt, me)
                     proven_pure = false
                     break
                 end
@@ -376,7 +377,7 @@ function optimize(me::InferenceState)
         if me.bestguess ⊑ Tuple && !isbits(widenconst(me.bestguess))
             bonus = me.params.inline_tupleret_bonus
         end
-        me.src.inlineable = isinlineable(def, me.src, me.mod, me.params, bonus)
+        me.src.inlineable = isinlineable(def, me, bonus)
     end
     me.src.inferred = true
     if me.optimize && !(me.limited && me.parent !== nothing)
@@ -528,15 +529,15 @@ function record_slot_assign!(sv::InferenceState)
             lhs = expr.args[1]
             rhs = expr.args[2]
             if isa(lhs, Slot)
-                id = slot_id(lhs)
                 if isa(rhs, Slot)
                     # exprtype isn't yet computed for slots
                     vt = st_i[slot_id(rhs)].typ
                 else
-                    vt = exprtype(rhs, sv.src, sv.mod)
+                    vt = exprtype(rhs, sv)
                 end
                 vt = widenconst(vt)
                 if vt !== Bottom
+                    id = slot_id(lhs)
                     otherTy = slottypes[id]
                     if otherTy === Bottom
                         slottypes[id] = vt
@@ -797,27 +798,50 @@ function is_pure_builtin(@nospecialize(f))
     end
 end
 
-function statement_effect_free(@nospecialize(e), src::CodeInfo, mod::Module)
+function statement_effect_free(@nospecialize(e), me::InferenceState)
     if isa(e, Expr)
         if e.head === :(=)
-            return !isa(e.args[1], GlobalRef) && effect_free(e.args[2], src, mod, false)
+            return !isa(e.args[1], GlobalRef) && effect_free(e.args[2], me, false)
         elseif e.head === :gotoifnot
-            return effect_free(e.args[1], src, mod, false)
+            return effect_free(e.args[1], me, false)
         end
     elseif isa(e, LabelNode) || isa(e, GotoNode)
         return true
     end
-    return effect_free(e, src, mod, false)
+    return effect_free(e, me, false)
 end
+
+# detect `new` exprs that won't throw
+function is_safe_new_expr(e::Expr, src, spvals, allow_volatile::Bool = true)
+    ea = e.args
+    typ = exprtype(ea[1], src, spvals)
+    # `Expr(:new)` of unknown type could raise arbitrary TypeError.
+    typ, isexact = instanceof_tfunc(typ)
+    isexact || return false
+    isconcretetype(typ) || return false
+    typ = typ::DataType
+    if !allow_volatile && typ.mutable
+        return false
+    end
+    fieldcount(typ) >= length(ea) - 1 || return false
+    for fld_idx in 1:(length(ea) - 1)
+        exprtype(ea[fld_idx + 1], src, spvals) ⊑ fieldtype(typ, fld_idx) || return false
+    end
+    return true
+end
+
+effect_free(@nospecialize(e), s::InferenceState, allow_volatile::Bool) =
+    effect_free(e, s.src, s.sp, allow_volatile)
+
+effect_free(@nospecialize(e), s::OptimizationState, allow_volatile::Bool) =
+    effect_free(e, s.src, s.sp, allow_volatile)
 
 # detect some important side-effect-free calls (allow_volatile=true)
 # and some affect-free calls (allow_volatile=false) -- affect_free means the call
 # cannot be affected by previous calls, except assignment nodes
-function effect_free(@nospecialize(e), src::CodeInfo, mod::Module, allow_volatile::Bool)
+function effect_free(@nospecialize(e), src::CodeInfo, spvals, allow_volatile::Bool)
     if isa(e, GlobalRef)
         return (isdefined(e.mod, e.name) && (allow_volatile || isconst(e.mod, e.name)))
-    elseif isa(e, Symbol)
-        return allow_volatile
     elseif isa(e, Slot)
         return src.slotflags[slot_id(e)] & SLOT_USEDUNDEF == 0
     elseif isa(e, Expr)
@@ -827,39 +851,42 @@ function effect_free(@nospecialize(e), src::CodeInfo, mod::Module, allow_volatil
             return true
         end
         if head === :static_parameter
+            etyp = sparam_type(spvals[e.args[1]])
             # if we aren't certain enough about the type, it might be an UndefVarError at runtime
-            return isa(e.typ, Const) || issingletontype(widenconst(e.typ))
+            return isa(etyp, Const) || issingletontype(widenconst(etyp))
         end
         if e.typ === Bottom
+            # TODO: it's not safe to rely on this
             return false
         end
         ea = e.args
         if head === :call
-            if is_known_call_p(e, is_pure_builtin, src, mod)
-                if !allow_volatile
-                    if is_known_call(e, arrayref, src, mod) || is_known_call(e, arraylen, src, mod)
-                        return false
-                    elseif is_known_call(e, getfield, src, mod)
-                        nargs = length(ea)
-                        (3 < nargs < 4) || return false
-                        et = exprtype(e, src, mod)
-                        # TODO: check ninitialized
-                        if !isa(et, Const) && !isconstType(et)
-                            # first argument must be immutable to ensure e is affect_free
-                            a = ea[2]
-                            typ = unwrap_unionall(widenconst(exprtype(a, src, mod)))
-                            if isType(typ)
-                                # all fields of subtypes of Type are effect-free
-                                # (including the non-inferrable uid field)
-                            elseif !isa(typ, DataType) || typ.abstract || (typ.mutable && length(typ.types) > 0)
-                                return false
+            if is_known_call_p(e, is_pure_builtin, src, spvals)
+                if !allow_volatile && (is_known_call(e, arrayref, src, spvals) || is_known_call(e, arraylen, src, spvals))
+                    return false
+                elseif is_known_call(e, getfield, src, spvals)
+                    nargs = length(ea)
+                    (3 <= nargs <= 4) || return false
+                    fldt = exprtype(ea[3], src, spvals)
+                    isa(fldt, Const) || return false
+                    objt = exprtype(ea[2], src, spvals)
+                    gftype = getfield_tfunc(objt, fldt)
+                    gftype === Bottom && return false
+                    if !allow_volatile
+                        # first argument must be immutable to ensure e is effect_free
+                        typ = widenconst(objt)
+                        if isconstType(typ)
+                            if Const(:uid) ⊑ fldt
+                                return false   # DataType uid field can change
                             end
+                        elseif typ !== SimpleVector && (!isa(typ, DataType) || typ.mutable || typ.abstract)
+                            return false
                         end
                     end
                 end
                 # fall-through
-            elseif is_known_call(e, _apply, src, mod) && length(ea) > 1
-                ft = exprtype(ea[2], src, mod)
+            elseif is_known_call(e, _apply, src, spvals) && length(ea) > 1
+                ft = exprtype(ea[2], src, spvals)
                 if !isa(ft, Const) || (!contains_is(_PURE_BUILTINS, ft.val) &&
                                        ft.val !== Core.sizeof)
                     return false
@@ -869,21 +896,7 @@ function effect_free(@nospecialize(e), src::CodeInfo, mod::Module, allow_volatil
                 return false
             end
         elseif head === :new
-            a = ea[1]
-            typ = exprtype(a, src, mod)
-            # `Expr(:new)` of unknown type could raise arbitrary TypeError.
-            typ, isexact = instanceof_tfunc(typ)
-            isexact || return false
-            isconcretetype(typ) || return false
-            !iskindtype(typ) || return false
-            typ = typ::DataType
-            if !allow_volatile && typ.mutable
-                return false
-            end
-            fieldcount(typ) >= length(ea) - 1 || return false
-            for fld_idx in 1:(length(ea) - 1)
-                exprtype(ea[fld_idx + 1], src, mod) ⊑ fieldtype(typ, fld_idx) || return false
-            end
+            is_safe_new_expr(e, src, spvals, allow_volatile) || return false
             # fall-through
         elseif head === :return
             # fall-through
@@ -897,7 +910,7 @@ function effect_free(@nospecialize(e), src::CodeInfo, mod::Module, allow_volatil
             return false
         end
         for a in ea
-            if !effect_free(a, src, mod, allow_volatile)
+            if !effect_free(a, src, spvals, allow_volatile)
                 return false
             end
         end
@@ -920,7 +933,7 @@ function inline_as_constant(@nospecialize(val), argexprs::Vector{Any}, sv::Optim
     stmts = invoke_fexpr === nothing ? [] : Any[invoke_fexpr]
     for i = 1:length(argexprs)
         arg = argexprs[i]
-        if !effect_free(arg, sv.src, sv.mod, false)
+        if !effect_free(arg, sv, false)
             push!(stmts, arg)
         end
         if i == 1 && !(invoke_texpr === nothing)
@@ -1110,7 +1123,7 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
                 (f === Core.kwfunc && length(argexprs) == 2) ||
                 (is_inlineable_constant(val) &&
                  (contains_is(_PURE_BUILTINS, f) ||
-                  (f === getfield && effect_free(e, sv.src, sv.mod, false)) ||
+                  (f === getfield && effect_free(e, sv, false)) ||
                   (isa(f, IntrinsicFunction) && is_pure_intrinsic_optim(f)))))
                 return inline_as_constant(val, argexprs, sv, nothing)
             end
@@ -1138,10 +1151,10 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
         invoke_entry === nothing && return NOT_FOUND
         invoke_fexpr = argexprs[1]
         invoke_texpr = argexprs[3]
-        if effect_free(invoke_fexpr, sv.src, sv.mod, false)
+        if effect_free(invoke_fexpr, sv, false)
             invoke_fexpr = nothing
         end
-        if effect_free(invoke_texpr, sv.src, sv.mod, false)
+        if effect_free(invoke_texpr, sv, false)
             invoke_fexpr = nothing
         end
         invoke_data = InvokeData(ft.name.mt, invoke_entry,
@@ -1190,9 +1203,9 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
         arg_T1 = argexprs[2]
         arg_T2 = argexprs[3]
         issubtype_stmts = ()
-        if !effect_free(arg_T2, sv.src, sv.mod, false)
+        if !effect_free(arg_T2, sv, false)
             # spill first argument to preserve order-of-execution
-            issubtype_vnew = newvar!(sv, widenconst(exprtype(arg_T1, sv.src, sv.mod)))
+            issubtype_vnew = newvar!(sv, widenconst(exprtype(arg_T1, sv)))
             issubtype_stmts = Any[ Expr(:(=), issubtype_vnew, arg_T1) ]
             arg_T1 = issubtype_vnew
         end
@@ -1365,7 +1378,7 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
     for i = na:-1:1 # stmts_free needs to be calculated in reverse-argument order
         #args_i = args[i]
         aei = argexprs[i]
-        aeitype = argtype = widenconst(exprtype(aei, sv.src, sv.mod))
+        aeitype = argtype = widenconst(exprtype(aei, sv))
         if i == 1 && !(invoke_texpr === nothing)
             pushfirst!(prelude_stmts, invoke_texpr)
         end
@@ -1380,7 +1393,7 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
             if occ < 6
                 occ += occurs_more(b, x->(isa(x, Slot) && slot_id(x) == i), 6)
             end
-            if occ > 0 && affect_free && !effect_free(b, src, method.module, true)
+            if occ > 0 && affect_free && !effect_free(b, src, methsp, true)
                 #TODO: we might be able to short-circuit this test better by memoizing effect_free(b) in the for loop over i
                 affect_free = false
             end
@@ -1388,9 +1401,9 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
                 break
             end
         end
-        free = effect_free(aei, sv.src, sv.mod, true)
-        if ((occ==0 && aeitype===Bottom) || (occ > 1 && !inline_worthy(aei, sv.src, sv.mod, sv.params)) ||
-                (affect_free && !free) || (!affect_free && !effect_free(aei, sv.src, sv.mod, false)))
+        free = effect_free(aei, sv, true)
+        if ((occ==0 && aeitype===Bottom) || (occ > 1 && !inline_worthy(aei, sv.src, sv.sp, sv.params)) ||
+                (affect_free && !free) || (!affect_free && !effect_free(aei, sv, false)))
             if occ != 0
                 vnew = newvar!(sv, aeitype)
                 argexprs[i] = vnew
@@ -1448,6 +1461,10 @@ function inlineable(@nospecialize(f), @nospecialize(ft), e::Expr, atypes::Vector
     retstmt = genlabel(sv)
     local retval
     multiret = false
+    if isempty(body.args)
+        #println(f)
+        #println(atypes)
+    end
     lastexpr = pop!(body.args)
     if isa(lastexpr, LabelNode)
         push!(body.args, lastexpr)
@@ -1558,7 +1575,7 @@ plus_saturate(x, y) = max(x, y, x+y)
 # known return type
 isknowntype(@nospecialize T) = (T == Union{}) || isconcretetype(T)
 
-function statement_cost(ex::Expr, line::Int, src::CodeInfo, mod::Module, params::Params)
+function statement_cost(ex::Expr, line::Int, src::CodeInfo, spvals, params::Params)
     head = ex.head
     if is_meta_expr(ex) || head == :copyast # not sure if copyast is right
         return 0
@@ -1566,14 +1583,14 @@ function statement_cost(ex::Expr, line::Int, src::CodeInfo, mod::Module, params:
     argcost = 0
     for a in ex.args
         if a isa Expr
-            argcost = plus_saturate(argcost, statement_cost(a, line, src, mod, params))
+            argcost = plus_saturate(argcost, statement_cost(a, line, src, spvals, params))
         end
     end
     if head == :return || head == :(=)
         return argcost
     end
     if head == :call
-        extyp = exprtype(ex.args[1], src, mod)
+        extyp = exprtype(ex.args[1], src, spvals)
         if isa(extyp, Type)
             return argcost
         end
@@ -1635,14 +1652,13 @@ function statement_cost(ex::Expr, line::Int, src::CodeInfo, mod::Module, params:
     return argcost
 end
 
-function inline_worthy(body::Array{Any,1}, src::CodeInfo, mod::Module,
-                       params::Params,
+function inline_worthy(body::Array{Any,1}, src::CodeInfo, spvals, params::Params,
                        cost_threshold::Integer=params.inline_cost_threshold)
     bodycost = 0
     for line = 1:length(body)
         stmt = body[line]
         if stmt isa Expr
-            thiscost = statement_cost(stmt, line, src, mod, params)::Int
+            thiscost = statement_cost(stmt, line, src, spvals, params)::Int
         elseif stmt isa GotoNode
             # loops are generally always expensive
             # but assume that forward jumps are already counted for from
@@ -1657,17 +1673,17 @@ function inline_worthy(body::Array{Any,1}, src::CodeInfo, mod::Module,
     return bodycost <= cost_threshold
 end
 
-function inline_worthy(body::Expr, src::CodeInfo, mod::Module, params::Params,
+function inline_worthy(body::Expr, src::CodeInfo, spvals, params::Params,
                        cost_threshold::Integer=params.inline_cost_threshold)
-    bodycost = statement_cost(body, typemax(Int), src, mod, params)
+    bodycost = statement_cost(body, typemax(Int), src, spvals, params)
     return bodycost <= cost_threshold
 end
 
-function inline_worthy(@nospecialize(body), src::CodeInfo, mod::Module, params::Params,
+function inline_worthy(@nospecialize(body), src::CodeInfo, spvals, params::Params,
                        cost_threshold::Integer=params.inline_cost_threshold)
-    newbody = exprtype(body, src, mod)
+    newbody = exprtype(body, src, spvals)
     !isa(newbody, Expr) && return true
-    return inline_worthy(newbody, src, mod, params, cost_threshold)
+    return inline_worthy(newbody, src, spvals, params, cost_threshold)
 end
 
 ssavalue_increment(@nospecialize(body), incr) = body
@@ -1690,7 +1706,7 @@ end
 
 function mk_tuplecall(args, sv::OptimizationState)
     e = Expr(:call, TOP_TUPLE, args...)
-    e.typ = tuple_tfunc(Tuple{Any[widenconst(exprtype(x, sv.src, sv.mod)) for x in args]...})
+    e.typ = tuple_tfunc(Tuple{Any[widenconst(exprtype(x, sv)) for x in args]...})
     return e
 end
 
@@ -1779,7 +1795,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
     end
     arg1 = eargs[1]
 
-    ft = exprtype(arg1, sv.src, sv.mod)
+    ft = exprtype(arg1, sv)
     if isa(ft, Const)
         f = ft.val
     elseif isa(ft, Conditional)
@@ -1805,7 +1821,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
 
             a2 = e.args[3]
             if isa(a2, Symbol) || isa(a2, Slot) || isa(a2, SSAValue)
-                ta2 = exprtype(a2, sv.src, sv.mod)
+                ta2 = exprtype(a2, sv)
                 if isa(ta2, Const)
                     a2 = ta2.val
                 end
@@ -1817,7 +1833,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
                 a1 = e.args[2]
                 basenumtype = Union{CoreNumType, Main.Base.ComplexF32, Main.Base.ComplexF64, Main.Base.Rational}
                 if isa(a1, basenumtype) || ((isa(a1, Symbol) || isa(a1, Slot) || isa(a1, SSAValue)) &&
-                                           exprtype(a1, sv.src, sv.mod) ⊑ basenumtype)
+                                           exprtype(a1, sv) ⊑ basenumtype)
                     if square
                         e.args = Any[GlobalRef(Main.Base,:*), a1, a1]
                         res = inlining_pass(e, sv, stmts, ins, boundscheck)
@@ -1836,7 +1852,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
         ata = Vector{Any}(uninitialized, length(e.args))
         ata[1] = ft
         for i = 2:length(e.args)
-            a = exprtype(e.args[i], sv.src, sv.mod)
+            a = exprtype(e.args[i], sv)
             (a === Bottom || isvarargtype(a)) && return e
             ata[i] = a
         end
@@ -1852,9 +1868,9 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
         if res !== NOT_FOUND
             # iteratively inline apply(f, tuple(...), tuple(...), ...) in order
             # to simplify long vararg lists as in multi-arg +
-            if isa(res,Expr) && is_known_call(res, _apply, sv.src, sv.mod)
+            if isa(res,Expr) && is_known_call(res, _apply, sv.src, sv.sp)
                 e = res::Expr
-                f = _apply; ft = AbstractEvalConstant(f)
+                f = _apply; ft = Const(f)
             else
                 return res
             end
@@ -1867,10 +1883,10 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
             effect_free_upto = 0
             for i = 3:na
                 aarg = e.args[i]
-                argt = exprtype(aarg, sv.src, sv.mod)
+                argt = exprtype(aarg, sv)
                 t = widenconst(argt)
                 if isa(argt, Const) && (isa(argt.val, Tuple) || isa(argt.val, SimpleVector)) &&
-                        effect_free(aarg, sv.src, sv.mod, true)
+                        effect_free(aarg, sv, true)
                     val = argt.val
                     newargs[i - 2] = Any[ quoted(val[i]) for i in 1:(length(val)::Int) ] # avoid making a tuple Generator here!
                 elseif isa(aarg, Tuple) || (isa(aarg, QuoteNode) && (isa(aarg.value, Tuple) || isa(aarg.value, SimpleVector)))
@@ -1884,15 +1900,15 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
                         as = newargs[k]
                         for kk = 1:length(as)
                             ak = as[kk]
-                            if !effect_free(ak, sv.src, sv.mod, true)
-                                tmpv = newvar!(sv, widenconst(exprtype(ak, sv.src, sv.mod)))
+                            if !effect_free(ak, sv, true)
+                                tmpv = newvar!(sv, widenconst(exprtype(ak, sv)))
                                 push!(newstmts, Expr(:(=), tmpv, ak))
                                 as[kk] = tmpv
                             end
                         end
                     end
                     effect_free_upto = i - 3
-                    if effect_free(aarg, sv.src, sv.mod, true)
+                    if effect_free(aarg, sv, true)
                         # apply(f,t::(x,y)) => f(t[1],t[2])
                         tmpv = aarg
                     else
@@ -1911,10 +1927,10 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
                         def = finddef(aarg, sv.src.code)
                         if def !== nothing
                             defex = def.args[2]
-                            if isa(defex, Expr) && is_known_call(defex, tuple, sv.src, sv.mod)
+                            if isa(defex, Expr) && is_known_call(defex, tuple, sv.src, sv.sp)
                                 tp = collect(Any, tp)
                                 for j = 1:ntp
-                                    specific_type = exprtype(defex.args[j+1], sv.src, sv.mod)
+                                    specific_type = exprtype(defex.args[j+1], sv)
                                     if (tp[j] <: Type) && specific_type ⊑ tp[j]
                                         tp[j] = specific_type
                                     end
@@ -1937,7 +1953,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
             e.args = [Any[e.args[2]]; newargs...]
 
             # now try to inline the simplified call
-            ft = exprtype(e.args[1], sv.src, sv.mod)
+            ft = exprtype(e.args[1], sv)
             if isa(ft, Const)
                 f = ft.val
             elseif isa(ft, Conditional)
@@ -1967,19 +1983,19 @@ function add_slot!(src::CodeInfo, @nospecialize(typ), is_sa::Bool, name::Symbol=
     return SlotNumber(id)
 end
 
-function is_known_call(e::Expr, @nospecialize(func), src::CodeInfo, mod::Module)
+function is_known_call(e::Expr, @nospecialize(func), src::CodeInfo, spvals)
     if e.head !== :call
         return false
     end
-    f = exprtype(e.args[1], src, mod)
+    f = exprtype(e.args[1], src, spvals)
     return isa(f, Const) && f.val === func
 end
 
-function is_known_call_p(e::Expr, @nospecialize(pred), src::CodeInfo, mod::Module)
+function is_known_call_p(e::Expr, @nospecialize(pred), src::CodeInfo, spvals)
     if e.head !== :call
         return false
     end
-    f = exprtype(e.args[1], src, mod)
+    f = exprtype(e.args[1], src, spvals)
     return (isa(f, Const) && pred(f.val)) || (isType(f) && pred(f.parameters[1]))
 end
 
@@ -2006,7 +2022,7 @@ function void_use_elim_pass!(sv::OptimizationState)
             elseif h === :isdefined || h === :copyast || h === :the_exception
                 return false
             end
-            return !effect_free(ex, sv.src, sv.mod, false)
+            return !effect_free(ex, sv, false)
         elseif (isa(ex, GotoNode) || isa(ex, LineNumberNode) ||
                 isa(ex, NewvarNode) || isa(ex, Symbol) || isa(ex, LabelNode))
             # This is a list of special types handled by the compiler
@@ -2145,7 +2161,7 @@ function gotoifnot_elim_pass!(sv::OptimizationState)
         isa(expr, Expr) || continue
         expr.head === :gotoifnot || continue
         cond = expr.args[1]
-        condt = exprtype(cond, sv.src, sv.mod)
+        condt = exprtype(cond, sv)
         isa(condt, Const) || continue
         val = (condt::Const).val
         # Codegen should emit an unreachable if val is not a Bool so
@@ -2219,9 +2235,9 @@ function fold_constant_getfield_pass!(sv::OptimizationState)
             head = ex.head
         end
         (head === :call && 2 < length(ex.args) < 5) || continue
-        is_known_call(ex, getfield, sv.src, sv.mod) || continue
+        is_known_call(ex, getfield, sv.src, sv.sp) || continue
         # No side effect can happen for linear IR
-        obj = exprtype(ex.args[2], sv.src, sv.mod)
+        obj = exprtype(ex.args[2], sv)
         isa(obj, Const) || continue
         obj = obj.val
         is_inlineable_constant(obj) || continue
@@ -2708,7 +2724,7 @@ function propagate_const_def!(ctx::AllocOptContext, info, key)
         defex = (def.assign::Expr).args[2]
         # We don't want to probagate this constant since this is a token.
         isa(defex, Expr) && defex.head === :gc_preserve_begin && return false
-        v = exprtype(defex, ctx.sv.src, ctx.sv.mod)
+        v = exprtype(defex, ctx.sv)
         (isa(v, Const) && is_inlineable_constant(v.val)) || return false
         v = v.val
         @isdefined(constv) && constv !== v && return false
@@ -2731,7 +2747,7 @@ function propagate_const_def!(ctx::AllocOptContext, info, key)
             use.stmts[use.stmtidx] = nothing
             continue
         elseif is_immutable
-            if use.exidx == 2 && is_known_call(use.expr, getfield, ctx.sv.src, ctx.sv.mod) &&
+            if use.exidx == 2 && is_known_call(use.expr, getfield, ctx.sv.src, ctx.sv.sp) &&
                 2 < length(use.expr.args) < 5
 
                 fld = use.expr.args[3]
@@ -2769,7 +2785,7 @@ function split_disjoint_assign!(ctx::AllocOptContext, info, key)
     for i in 1:ndefs
         def = info.defs[i]
         defex = (def.assign::Expr).args[2]
-        rhstyp = widenconst(exprtype(defex, ctx.sv.src, ctx.sv.mod))
+        rhstyp = widenconst(exprtype(defex, ctx.sv))
         isdispatchelem(rhstyp) || return false
         alltypes[rhstyp] = nothing
         deftypes[i] = rhstyp
@@ -2788,7 +2804,7 @@ function split_disjoint_assign!(ctx::AllocOptContext, info, key)
         if usex.head === :(=) || usex.head === :&
             return false
         else
-            ty = exprtype(usex, ctx.sv.src, ctx.sv.mod)
+            ty = exprtype(usex, ctx.sv)
             if isa(ty, Const)
             elseif isa(ty, Conditional) && isa(ty.var, Slot) && slot_id(ty.var) == key.first
                 if isa(ty.vtype, Const) && !isdefined(typeof(ty.vtype.val), :instance)
@@ -2798,7 +2814,7 @@ function split_disjoint_assign!(ctx::AllocOptContext, info, key)
             else
                 return false
             end
-            effect_free(usex, ctx.sv.src, ctx.sv.mod, false) || return false
+            effect_free(usex, ctx.sv, false) || return false
         end
     end
     name = ctx.sv.src.slotnames[key.first]
@@ -2849,7 +2865,7 @@ function split_disjoint_assign!(ctx::AllocOptContext, info, key)
                 continue
             end
         end
-        ty = exprtype(usex, ctx.sv.src, ctx.sv.mod)
+        ty = exprtype(usex, ctx.sv)
         if isa(ty, Const) && is_inlineable_constant(ty.val)
             replace_use_expr_with!(ctx, use, quoted(ty.val))
         elseif isa(ty, Conditional)
@@ -3000,10 +3016,10 @@ function split_struct_alloc!(ctx::AllocOptContext, info, key)
         defex = (def.assign::Expr).args[2]
         if isa(defex, Expr)
             defex = defex::Expr
-            if is_known_call(defex, tuple, ctx.sv.src, ctx.sv.mod)
+            if is_known_call(defex, tuple, ctx.sv.src, ctx.sv.sp)
                 si = structinfo_tuple(defex)
             elseif defex.head === :new
-                typ = widenconst(exprtype(defex, ctx.sv.src, ctx.sv.mod))
+                typ = widenconst(exprtype(defex, ctx.sv))
                 # typ <: Tuple shouldn't happen but just in case someone generated invalid AST
                 if !isa(typ, DataType) || !isdispatchelem(typ) || typ <: Tuple
                     return false
@@ -3013,7 +3029,7 @@ function split_struct_alloc!(ctx::AllocOptContext, info, key)
                 return false
             end
         else
-            v = exprtype(defex, ctx.sv.src, ctx.sv.mod)
+            v = exprtype(defex, ctx.sv)
             isa(v, Const) || return false
             v = v.val
             vt = typeof(v)
@@ -3145,11 +3161,11 @@ function split_struct_alloc!(ctx::AllocOptContext, info, key)
                 return false
             end
             fld = expr.args[3]
-            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.mod)
+            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.sp)
                 use_kind = 0
-            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.sp)
                 use_kind = 1
-            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.sp)
                 if n_immut != 0 || length(expr.args) < 4
                     return false
                 end
@@ -3195,7 +3211,7 @@ function split_struct_alloc!(ctx::AllocOptContext, info, key)
                 has_preserve && return false
                 has_setfield_undef = true
             end
-            fld_typ = widenconst(exprtype(expr.args[4], ctx.sv.src, ctx.sv.mod))
+            fld_typ = widenconst(exprtype(expr.args[4], ctx.sv))
             ctx.setfield_typ[fld] = Union{fld_typ, get(ctx.setfield_typ, fld, Union{})}
         end
         ctx.all_fld[fld] = nothing
@@ -3244,11 +3260,11 @@ function replace_struct_uses!(ctx, info, vars)
             continue
         elseif head === :call
             fld = expr.args[3]
-            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.mod)
+            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.sp)
                 use_kind = 0
-            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.sp)
                 use_kind = 1
-            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.sp)
                 use_kind = 2
             end
         end
@@ -3352,8 +3368,7 @@ function replace_struct_defs!(ctx, info, vars)
                 else
                     # The field is not used and we don't need to deal with any side effects
                     if has_def
-                        if si.isnew && !(exprtype(fld_def, ctx.sv.src,
-                                                  ctx.sv.mod) ⊑ fieldtype(si.typ, fld_idx))
+                        if si.isnew && !(exprtype(fld_def, ctx.sv) ⊑ fieldtype(si.typ, fld_idx))
                             check_ex = Expr(:call, check_new_field_type, fld_def,
                                             quoted(fieldtype(si.typ, fld_idx)))
                             push!(exprs, check_ex)
@@ -3373,7 +3388,7 @@ function replace_struct_defs!(ctx, info, vars)
                 add_def(ctx.infomap, flag_slot, ValueDef(flag_ex, exprs, length(exprs)))
             end
             if has_def
-                fld_ty = widenconst(exprtype(fld_def, ctx.sv.src, ctx.sv.mod))
+                fld_ty = widenconst(exprtype(fld_def, ctx.sv))
                 if si.isnew && !(fld_ty ⊑ fieldtype(si.typ, fld_idx))
                     struct_fld_ty = fieldtype(si.typ, fld_idx)
                     check_ex = Expr(:call, check_new_field_type, fld_def,
@@ -3483,7 +3498,7 @@ function split_struct_alloc_single!(ctx::AllocOptContext, info, key, nf, has_pre
         has_setfld_use = false
         if has_def
             orig_def = si.defs[i]
-            field_typ = widenconst(exprtype(orig_def, ctx.sv.src, ctx.sv.mod))
+            field_typ = widenconst(exprtype(orig_def, ctx.sv))
             if si.isnew && !(field_typ ⊑ fieldtype(si.typ, i))
                 struct_fld_ty = fieldtype(si.typ, i)
                 check_ex = Expr(:call, check_new_field_type, orig_def,
@@ -3545,7 +3560,7 @@ function split_struct_alloc_single!(ctx::AllocOptContext, info, key, nf, has_pre
         else
             # OK so no setfield
             # First check if the field was a constant
-            cv = exprtype(orig_def, ctx.sv.src, ctx.sv.mod)
+            cv = exprtype(orig_def, ctx.sv)
             if isa(cv, Const) && is_inlineable_constant(cv.val)
                 vars[i] = quoted(cv.val)
                 # Constants don't need to be preserved
@@ -3618,11 +3633,11 @@ function split_struct_alloc_single!(ctx::AllocOptContext, info, key, nf, has_pre
             continue
         elseif head === :call
             fld = expr.args[3]
-            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.mod)
+            if is_known_call(expr, isdefined, ctx.sv.src, ctx.sv.sp)
                 use_kind = 0
-            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, getfield, ctx.sv.src, ctx.sv.sp)
                 use_kind = 1
-            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.mod)
+            elseif is_known_call(expr, setfield!, ctx.sv.src, ctx.sv.sp)
                 use_kind = 2
             end
         end

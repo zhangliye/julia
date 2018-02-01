@@ -170,23 +170,42 @@ function method_for_inference_heuristics(method::Method, @nospecialize(sig), spa
     return method
 end
 
-function exprtype(@nospecialize(x), src::CodeInfo, mod::Module)
+exprtype(@nospecialize(x), state) = exprtype(x, state.src, state.sp)
+
+function exprtype(@nospecialize(x), src::CodeInfo, spvals)
     if isa(x, Expr)
-        return (x::Expr).typ
+        if x.head === :new
+            return instanceof_tfunc(exprtype(x.args[1], src, spvals))[1]
+        elseif x.head === :isdefined
+            return Bool
+        elseif x.head === :boundscheck
+            return Bool
+        elseif x.head === :the_exception || x.head === :gc_preserve_begin
+            return Any
+        elseif x.head === :copyast
+            return exprtype(x.args[1], src, spvals)
+        elseif x.head === :static_parameter
+            return sparam_type(spvals[x.args[1]])
+        end
+        # TODO: this still happens for cglobal
+        #ccall(:jl_, Void, (Any,), src)
+        #ccall(:jl_, Void, (Any,), x)
+        #assert(false)
+        return Any
     elseif isa(x, SlotNumber)
         return src.slottypes[(x::SlotNumber).id]
     elseif isa(x, TypedSlot)
         return (x::TypedSlot).typ
     elseif isa(x, SSAValue)
         return abstract_eval_ssavalue(x::SSAValue, src)
-    elseif isa(x, Symbol)
-        return abstract_eval_global(mod, x::Symbol)
+    #elseif isa(x, Symbol)
+    #    assert(false)
     elseif isa(x, QuoteNode)
-        return AbstractEvalConstant((x::QuoteNode).value)
+        return abstract_eval_constant((x::QuoteNode).value)
     elseif isa(x, GlobalRef)
         return abstract_eval_global(x.mod, (x::GlobalRef).name)
     else
-        return AbstractEvalConstant(x)
+        return abstract_eval_constant(x)
     end
 end
 

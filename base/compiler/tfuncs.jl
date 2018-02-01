@@ -4,7 +4,7 @@
 # constants #
 #############
 
-const AbstractEvalConstant = Const
+const abstract_eval_constant = Const
 
 const _NAMEDTUPLE_NAME = NamedTuple.body.body.name
 
@@ -428,7 +428,7 @@ function const_datatype_getfield_tfunc(sv, fld)
             fld == DATATYPE_TYPES_FIELDINDEX ||
             fld == DATATYPE_SUPER_FIELDINDEX ||
             fld == DATATYPE_MUTABLE_FIELDINDEX)
-        return AbstractEvalConstant(getfield(sv, fld))
+        return abstract_eval_constant(getfield(sv, fld))
     end
     return nothing
 end
@@ -468,7 +468,7 @@ function getfield_tfunc(@nospecialize(s00), @nospecialize(name))
                 if (fld == TYPENAME_NAME_FIELDINDEX ||
                     fld == TYPENAME_MODULE_FIELDINDEX ||
                     fld == TYPENAME_WRAPPER_FIELDINDEX)
-                    return AbstractEvalConstant(getfield(sv, fld))
+                    return abstract_eval_constant(getfield(sv, fld))
                 end
             end
             if isa(sv, Module) && isa(nv, Symbol)
@@ -478,7 +478,7 @@ function getfield_tfunc(@nospecialize(s00), @nospecialize(name))
                 return Bottom
             end
             if (isa(sv, SimpleVector) || isimmutable(sv)) && isdefined(sv, nv)
-                return AbstractEvalConstant(getfield(sv, nv))
+                return abstract_eval_constant(getfield(sv, nv))
             end
         end
         s = typeof(sv)

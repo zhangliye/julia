@@ -109,7 +109,7 @@ function typeinf_edge(method::Method, @nospecialize(atypes), sparams::SimpleVect
         inf = code.inferred
         if !isa(inf, CodeInfo) || (inf::CodeInfo).inferred
             if isdefined(code, :inferred_const)
-                return AbstractEvalConstant(code.inferred_const), code
+                return Const(code.inferred_const), code
             else
                 return code.rettype, code
             end

@@ -53,18 +53,7 @@ mutable struct InferenceState
         code = src.code::Array{Any,1}
         toplevel = !isa(linfo.def, Method)
 
-        if !toplevel && isempty(linfo.sparam_vals) && !isempty(linfo.def.sparam_syms)
-            # linfo is unspecialized
-            sp = Any[]
-            sig = linfo.def.sig
-            while isa(sig, UnionAll)
-                push!(sp, sig.var)
-                sig = sig.body
-            end
-            sp = svec(sp...)
-        else
-            sp = linfo.sparam_vals
-        end
+        sp = spvals_from_meth_instance(linfo)
 
         nssavalues = src.ssavaluetypes::Int
         src.ssavaluetypes = Any[ NOT_FOUND for i = 1:nssavalues ]
@@ -147,6 +136,22 @@ function InferenceState(result::InferenceResult, optimize::Bool, cached::Bool, p
     src === nothing && return nothing
     validate_code_in_debug_mode(result.linfo, src, "lowered")
     return InferenceState(result, src, optimize, cached, params)
+end
+
+function spvals_from_meth_instance(linfo::MethodInstance)
+    toplevel = !isa(linfo.def, Method)
+    if !toplevel && isempty(linfo.sparam_vals) && !isempty(linfo.def.sparam_syms)
+        # linfo is unspecialized
+        sp = Any[]
+        sig = linfo.def.sig
+        while isa(sig, UnionAll)
+            push!(sp, sig.var)
+            sig = sig.body
+        end
+        return svec(sp...)
+    else
+        return linfo.sparam_vals
+    end
 end
 
 _topmod(sv::InferenceState) = _topmod(sv.mod)
