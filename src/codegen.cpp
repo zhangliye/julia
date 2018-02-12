@@ -247,9 +247,6 @@ static DISubroutineType *jl_di_func_null_sig;
 
 // constants
 static Constant *V_null;
-extern "C" {
-JL_DLLEXPORT Type *julia_type_to_llvm(jl_value_t *jt, bool *isboxed=NULL);
-}
 static bool type_is_ghost(Type *ty)
 {
     return (ty == T_void || ty->isEmptyTy());
@@ -499,8 +496,6 @@ typedef struct {
     jl_value_t *ty;
 } jl_arrayvar_t;
 
-static jl_returninfo_t get_specsig_function(Module *M, StringRef name, jl_value_t *sig, jl_value_t *jlrettype);
-
 // information about the context of a piece of code: its enclosing
 // function and module, and visible local variables and labels.
 class jl_codectx_t {
@@ -555,6 +550,8 @@ public:
     }
 };
 
+static Type *julia_type_to_llvm(jl_codectx_t &ctx, jl_value_t *jt, bool *isboxed = NULL);
+static jl_returninfo_t get_specsig_function(jl_codectx_t &ctx, Module *M, StringRef name, jl_value_t *sig, jl_value_t *jlrettype);
 static jl_cgval_t emit_expr(jl_codectx_t &ctx, jl_value_t *expr);
 static Value *global_binding_pointer(jl_codectx_t &ctx, jl_module_t *m, jl_sym_t *s,
                                      jl_binding_t **pbnd, bool assign);
@@ -623,9 +620,8 @@ static inline jl_cgval_t mark_julia_const(jl_value_t *jv)
     }
     else {
         typ = jl_typeof(jv);
-        if (type_is_ghost(julia_type_to_llvm(typ))) {
+        if (jl_is_datatype_singleton((jl_datatype_t*)typ))
             return ghostValue(typ);
-        }
     }
     jl_cgval_t constant(NULL, NULL, true, typ, NULL);
     constant.constant = jv;
@@ -656,7 +652,7 @@ static inline jl_cgval_t mark_julia_type(jl_codectx_t &ctx, Value *v, bool isbox
             return ghostValue(typ);
         }
     }
-    Type *T = julia_type_to_llvm(typ);
+    Type *T = julia_type_to_llvm(ctx, typ);
     if (type_is_ghost(T)) {
         return ghostValue(typ);
     }
@@ -717,7 +713,7 @@ static inline jl_cgval_t update_julia_type(jl_codectx_t &ctx, const jl_cgval_t &
         if (!jl_is_concrete_type(typ))
             return v; // not generally worth trying to change type info (which would require recomputing tindex)
     }
-    Type *T = julia_type_to_llvm(typ);
+    Type *T = julia_type_to_llvm(ctx, typ);
     if (type_is_ghost(T))
         return ghostValue(typ);
     return jl_cgval_t(v, typ, NULL);
@@ -983,7 +979,7 @@ static jl_cgval_t convert_julia_type(jl_codectx_t &ctx, const jl_cgval_t &v, jl_
         return ghostValue(typ); // normalize TypeofBottom to Type{Union{}}
     if (v.typ == typ || v.typ == jl_bottom_type || jl_egal(v.typ, typ))
         return v; // fast-path
-    Type *T = julia_type_to_llvm(typ);
+    Type *T = julia_type_to_llvm(ctx, typ);
     if (type_is_ghost(T))
         return ghostValue(typ);
     Value *new_tindex = NULL;
@@ -1637,7 +1633,7 @@ static Value *emit_bitsunion_compare(jl_codectx_t &ctx, const jl_cgval_t &arg1, 
 static Value *emit_bits_compare(jl_codectx_t &ctx, const jl_cgval_t &arg1, const jl_cgval_t &arg2)
 {
     bool isboxed;
-    Type *at = julia_type_to_llvm(arg1.typ, &isboxed);
+    Type *at = julia_type_to_llvm(ctx, arg1.typ, &isboxed);
     assert(jl_is_datatype(arg1.typ) && arg1.typ == arg2.typ && !isboxed);
 
     if (type_is_ghost(at))
@@ -1689,7 +1685,7 @@ static Value *emit_bits_compare(jl_codectx_t &ctx, const jl_cgval_t &arg1, const
             Value *answer = ConstantInt::get(T_int1, 1);
             for (size_t i = 0, l = jl_svec_len(types); i < l; i++) {
                 jl_value_t *fldty = jl_svecref(types, i);
-                if (type_is_ghost(julia_type_to_llvm(fldty)))
+                if (type_is_ghost(julia_type_to_llvm(ctx, fldty)))
                     continue;
                 unsigned byte_offset = jl_field_offset(sty, i);
                 Value *subAns, *fld1, *fld2;
@@ -2442,7 +2438,7 @@ static jl_cgval_t emit_call_specsig_object(jl_codectx_t &ctx, jl_method_instance
 {
     // emit specialized call site
     jl_value_t *jlretty = li->rettype;
-    jl_returninfo_t returninfo = get_specsig_function(jl_Module, specFunctionObject, li->specTypes, jlretty);
+    jl_returninfo_t returninfo = get_specsig_function(ctx, jl_Module, specFunctionObject, li->specTypes, jlretty);
     FunctionType *cft = returninfo.decl->getFunctionType();
     *cc = returninfo.cc;
 
@@ -2472,7 +2468,7 @@ static jl_cgval_t emit_call_specsig_object(jl_codectx_t &ctx, jl_method_instance
     for (size_t i = 0; i < nargs; i++) {
         jl_value_t *jt = jl_nth_slot_type(li->specTypes, i);
         bool isboxed;
-        Type *et = julia_type_to_llvm(jt, &isboxed);
+        Type *et = julia_type_to_llvm(ctx, jt, &isboxed);
         if (type_is_ghost(et))
             continue;
         assert(idx < nfargs);
@@ -3006,7 +3002,7 @@ static void emit_vi_assignment_unboxed(jl_codectx_t &ctx, jl_varinfo_t &vi, Valu
                     Value *dest = vi.value.V;
                     if (vi.pTIndex)
                         ctx.builder.CreateStore(UndefValue::get(cast<AllocaInst>(vi.value.V)->getAllocatedType()), vi.value.V);
-                    Type *store_ty = julia_type_to_llvm(rval_info.constant ? jl_typeof(rval_info.constant) : rval_info.typ);
+                    Type *store_ty = julia_type_to_llvm(ctx, rval_info.constant ? jl_typeof(rval_info.constant) : rval_info.typ);
                     Type *dest_ty = store_ty->getPointerTo();
                     if (dest_ty != dest->getType())
                         dest = emit_bitcast(ctx, dest, dest_ty);
@@ -3100,7 +3096,7 @@ static void emit_assignment(jl_codectx_t &ctx, jl_value_t *l, jl_value_t *r)
             }
             else {
                 bool isboxed;
-                Type *vtype = julia_type_to_llvm(slot.typ, &isboxed);
+                Type *vtype = julia_type_to_llvm(ctx, slot.typ, &isboxed);
                 assert(!isboxed);
                 dest = emit_static_alloca(ctx, vtype);
                 emit_unbox(ctx, vtype, slot, slot.typ, dest);
@@ -3605,7 +3601,7 @@ static void emit_cfunc_invalidate(
     for (size_t i = 0; i < nargs; i++) {
         jl_value_t *jt = jl_nth_slot_type(calltype, i);
         bool isboxed;
-        Type *et = julia_type_to_llvm(jt, &isboxed);
+        Type *et = julia_type_to_llvm(ctx, jt, &isboxed);
         if (type_is_ghost(et)) {
             assert(jl_is_datatype(jt) && ((jl_datatype_t*)jt)->instance);
             myargs[i] = mark_julia_const(((jl_datatype_t*)jt)->instance);
@@ -3680,14 +3676,14 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
 {
     // Generate a c-callable wrapper
     bool toboxed;
-    Type *crt = julia_struct_to_llvm(jlrettype, NULL, &toboxed);
+    Type *crt = _julia_struct_to_llvm(&params, jlrettype, NULL, &toboxed);
     if (crt == NULL)
         jl_error("cfunction: return type doesn't correspond to a C type");
     else if (toboxed)
         crt = T_prjlvalue;
 
     size_t nargs = jl_nparams(argt);
-    function_sig_t sig(crt, jlrettype, toboxed, argt->parameters, NULL, nargs, false, CallingConv::C, false);
+    function_sig_t sig(crt, jlrettype, toboxed, argt->parameters, NULL, nargs, false, CallingConv::C, false, &params);
     if (!sig.err_msg.empty())
         jl_error(sig.err_msg.c_str());
     if (sig.fargt.size() + sig.sret != sig.fargt_sig.size())
@@ -3807,7 +3803,7 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
             }
             else {
                 bool isboxed;
-                Type *T = julia_type_to_llvm(jargty, &isboxed);
+                Type *T = julia_type_to_llvm(ctx, jargty, &isboxed);
                 assert(!isboxed);
                 // a T* (of unknown origin)
                 if (type_is_ghost(T)) {
@@ -3822,7 +3818,7 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
         }
         else {
             bool argboxed;
-            (void)julia_struct_to_llvm(jargty, NULL, &argboxed);
+            (void)julia_struct_to_llvm(ctx, jargty, NULL, &argboxed);
             if (argboxed) {
                 // a jl_value_t*, even when represented as a struct
                 inputarg = mark_julia_type(ctx, val, true, jargty);
@@ -3839,7 +3835,7 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
                     val = llvm_type_rewrite(ctx, val, sig.fargt[i], issigned);
                 }
                 bool isboxed;
-                (void)julia_type_to_llvm(jargty, &isboxed);
+                (void)julia_type_to_llvm(ctx, jargty, &isboxed);
                 if (isboxed) {
                     // passed an unboxed T, but want something boxed
                     Value *mem = emit_allocobj(ctx, jl_datatype_size(jargty),
@@ -3870,7 +3866,7 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
     else if (lam && !decls.specFunctionObject.empty()) {
         // emit a specsig call
         StringRef protoname = decls.specFunctionObject;
-        jl_returninfo_t returninfo = get_specsig_function(M, protoname, lam->specTypes, lam->rettype);
+        jl_returninfo_t returninfo = get_specsig_function(ctx, M, protoname, lam->specTypes, lam->rettype);
         FunctionType *cft = returninfo.decl->getFunctionType();
         jlfunc_sret = (returninfo.cc == jl_returninfo_t::SRet);
 
@@ -3890,7 +3886,7 @@ static Function *gen_cfun_wrapper(jl_function_t *ff, jl_value_t *jlrettype, jl_t
             Value *arg;
             jl_value_t *spect = jl_nth_slot_type(lam->specTypes, i);
             bool isboxed;
-            Type *T = julia_type_to_llvm(spect, &isboxed);
+            Type *T = julia_type_to_llvm(ctx, spect, &isboxed);
             if (isboxed) {
                 arg = boxed(ctx, inputarg);
             }
@@ -4180,7 +4176,7 @@ static Function *gen_jlcall_wrapper(jl_method_instance_t *lam, const jl_returnin
     for (size_t i = 0; i < jl_nparams(lam->specTypes) && idx < nfargs; ++i) {
         jl_value_t *ty = jl_nth_slot_type(lam->specTypes, i);
         bool isboxed;
-        Type *lty = julia_type_to_llvm(ty, &isboxed);
+        Type *lty = julia_type_to_llvm(ctx, ty, &isboxed);
         if (lty != NULL && type_is_ghost(lty))
             continue;
         Value *theArg;
@@ -4233,7 +4229,7 @@ static Function *gen_jlcall_wrapper(jl_method_instance_t *lam, const jl_returnin
     return w;
 }
 
-static jl_returninfo_t get_specsig_function(Module *M, StringRef name, jl_value_t *sig, jl_value_t *jlrettype)
+static jl_returninfo_t get_specsig_function(jl_codectx_t &ctx, Module *M, StringRef name, jl_value_t *sig, jl_value_t *jlrettype)
 {
     jl_returninfo_t props = {};
     SmallVector<Type*, 8> fsig;
@@ -4262,7 +4258,7 @@ static jl_returninfo_t get_specsig_function(Module *M, StringRef name, jl_value_
     }
     else {
         bool retboxed;
-        rt = julia_type_to_llvm(jlrettype, &retboxed);
+        rt = julia_type_to_llvm(ctx, jlrettype, &retboxed);
         if (!retboxed) {
             if (rt != T_void && deserves_sret(jlrettype, rt)) {
                 props.cc = jl_returninfo_t::SRet;
@@ -4293,7 +4289,7 @@ static jl_returninfo_t get_specsig_function(Module *M, StringRef name, jl_value_
     for (size_t i = 0; i < jl_nparams(sig); i++) {
         jl_value_t *jt = jl_tparam(sig, i);
         bool isboxed;
-        Type *ty = julia_type_to_llvm(jt, &isboxed);
+        Type *ty = julia_type_to_llvm(ctx, jt, &isboxed);
         if (type_is_ghost(ty))
             continue;
         if (ty->isAggregateType()) { // aggregate types are passed by pointer
@@ -4321,20 +4317,14 @@ static jl_returninfo_t get_specsig_function(Module *M, StringRef name, jl_value_
 }
 
 static DISubroutineType *
-get_specsig_di(jl_value_t *rt, jl_value_t *sig, DIFile *topfile, DIBuilder &dbuilder)
+get_specsig_di(jl_codectx_t &ctx, jl_value_t *rt, jl_value_t *sig, DIBuilder &dbuilder)
 {
-    std::vector<Metadata*> ditypes(0);
-    Type *ty = julia_type_to_llvm(rt);
-    if (type_is_ghost(ty))
-        ditypes.push_back(nullptr);
-    else
-        ditypes.push_back(julia_type_to_di(rt, &dbuilder, false));
-    for (size_t i = 0; i < jl_nparams(sig); i++) {
+    size_t nargs = jl_nparams(sig); // TODO: if this is a Varargs function, our debug info for the `...` var may be misleading
+    std::vector<Metadata*> ditypes(nargs + 1);
+    ditypes[0] = julia_type_to_di(ctx, rt, &dbuilder, false);
+    for (size_t i = 0; i < nargs; i++) {
         jl_value_t *jt = jl_tparam(sig, i);
-        Type *ty = julia_type_to_llvm(jt);
-        if (type_is_ghost(ty))
-            continue;
-        ditypes.push_back(julia_type_to_di(jt, &dbuilder, false));
+        ditypes[i + 1] = julia_type_to_di(ctx, jt, &dbuilder, false);
     }
     return dbuilder.createSubroutineType(dbuilder.getOrCreateTypeArray(ditypes));
 }
@@ -4509,7 +4499,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
         std::stringstream specName;
         specName << "julia_" << unadorned_name << "_" << globalUnique;
         declarations.specFunctionObject = specName.str();
-        returninfo = get_specsig_function(M, declarations.specFunctionObject, lam->specTypes, jlrettype);
+        returninfo = get_specsig_function(ctx, M, declarations.specFunctionObject, lam->specTypes, jlrettype);
         f = returninfo.decl;
         ctx.has_sret = (returninfo.cc == jl_returninfo_t::SRet || returninfo.cc == jl_returninfo_t::Union);
         gen_jlcall_wrapper(lam, returninfo, declarations.functionObject, M, ctx.emission_context);
@@ -4586,7 +4576,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
             subrty = jl_di_func_sig;
         }
         else {
-            subrty = get_specsig_di(lam->rettype, lam->specTypes, topfile, dbuilder);
+            subrty = get_specsig_di(ctx, lam->rettype, lam->specTypes, dbuilder);
         }
         SP = dbuilder.createFunction(CU,
                                      dbgFuncName,      // Name
@@ -4617,7 +4607,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
                     topfile,                            // File
                     toplineno == -1 ? 0 : toplineno,    // Line
                     // Variable type
-                    julia_type_to_di(varinfo.value.typ, &dbuilder, false),
+                    julia_type_to_di(ctx, varinfo.value.typ, &dbuilder, false),
                     AlwaysPreserve,                     // May be deleted if optimized out
                     DIFlagZero);                        // Flags (TODO: Do we need any)
             }
@@ -4628,7 +4618,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
                     ctx.has_sret + nreq + 1,            // Argument number (1-based)
                     topfile,                            // File
                     toplineno == -1 ? 0 : toplineno,    // Line (for now, use lineno of the function)
-                    julia_type_to_di(ctx.slots[ctx.vaSlot].value.typ, &dbuilder, false),
+                    julia_type_to_di(ctx, ctx.slots[ctx.vaSlot].value.typ, &dbuilder, false),
                     AlwaysPreserve,                     // May be deleted if optimized out
                     DIFlagZero);                        // Flags (TODO: Do we need any)
             }
@@ -4643,7 +4633,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
                     jl_symbol_name(s),       // Variable name
                     topfile,                 // File
                     toplineno == -1 ? 0 : toplineno, // Line (for now, use lineno of the function)
-                    julia_type_to_di(varinfo.value.typ, &dbuilder, false), // Variable type
+                    julia_type_to_di(ctx, varinfo.value.typ, &dbuilder, false), // Variable type
                     AlwaysPreserve,          // May be deleted if optimized out
                     DIFlagZero               // Flags (TODO: Do we need any)
                     );
@@ -4747,7 +4737,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
         }
         else if (jl_justbits(jt)) {
             bool isboxed;
-            Type *vtype = julia_type_to_llvm(jt, &isboxed);
+            Type *vtype = julia_type_to_llvm(ctx, jt, &isboxed);
             assert(!isboxed);
             assert(!type_is_ghost(vtype) && "constants should already be handled");
             // CreateAlloca is OK during prologue setup
@@ -4826,7 +4816,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
         jl_sym_t *s = (jl_sym_t*)jl_array_ptr_ref(src->slotnames, i);
         jl_value_t *argType = jl_nth_slot_type(lam->specTypes, i);
         bool isboxed;
-        Type *llvmArgType = julia_type_to_llvm(argType, &isboxed);
+        Type *llvmArgType = julia_type_to_llvm(ctx, argType, &isboxed);
         if (s == unused_sym) {
             if (specsig && !type_is_ghost(llvmArgType))
                 ++AI;
@@ -4913,7 +4903,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
             for (size_t i = nreq; i < jl_nparams(lam->specTypes); ++i) {
                 jl_value_t *argType = jl_nth_slot_type(lam->specTypes, i);
                 bool isboxed;
-                Type *llvmArgType = julia_type_to_llvm(argType, &isboxed);
+                Type *llvmArgType = julia_type_to_llvm(ctx, argType, &isboxed);
                 vargs[i - nreq] = get_specsig_arg(argType, llvmArgType, isboxed);
             }
             jl_cgval_t tuple = emit_new_struct(ctx, vi.value.typ, nvargs, vargs);
@@ -5257,7 +5247,7 @@ static std::pair<std::unique_ptr<Module>, jl_llvm_functions_t>
                     }
                 }
                 else {
-                    Type *store_ty = julia_type_to_llvm(retvalinfo.typ);
+                    Type *store_ty = julia_type_to_llvm(ctx, retvalinfo.typ);
                     Type *dest_ty = store_ty->getPointerTo();
                     if (dest_ty != sret->getType())
                         sret = emit_bitcast(ctx, sret, dest_ty);
@@ -5684,7 +5674,7 @@ static void init_julia_llvm_env(Module *m)
 
     // add needed base debugging definitions to our LLVM environment
     DIBuilder dbuilder(*m);
-    DIFile *julia_h = dbuilder.createFile("julia.h","");
+    DIFile *julia_h = dbuilder.createFile("julia.h", "");
     jl_value_dillvmt = dbuilder.createStructType(nullptr,
         "jl_value_t",
         julia_h,
@@ -5704,14 +5694,14 @@ static void init_julia_llvm_env(Module *m)
     dbuilder.replaceArrays(jl_value_dillvmt,
        dbuilder.getOrCreateArray(Elts));
 
-    jl_ppvalue_dillvmt = dbuilder.createPointerType(jl_pvalue_dillvmt,sizeof(jl_value_t**)*8,
-                                                    __alignof__(jl_value_t**)*8);
+    jl_ppvalue_dillvmt = dbuilder.createPointerType(jl_pvalue_dillvmt, sizeof(jl_value_t**) * 8,
+                                                    __alignof__(jl_value_t**) * 8);
 
     diargs.push_back(jl_pvalue_dillvmt);    // Return Type (ret value)
     diargs.push_back(jl_pvalue_dillvmt);    // First Argument (function)
     diargs.push_back(jl_ppvalue_dillvmt);   // Second Argument (argv)
     // Third argument (length(argv))
-    diargs.push_back(julia_type_to_di((jl_value_t*)jl_int32_type,&dbuilder,false));
+    diargs.push_back(_julia_type_to_di(NULL, (jl_value_t*)jl_int32_type, &dbuilder, false));
 
     jl_di_func_sig = dbuilder.createSubroutineType(
         dbuilder.getOrCreateTypeArray(diargs));

@@ -634,7 +634,7 @@ static Value *julia_to_address(
         return p;
     }
 
-    Type *slottype = julia_struct_to_llvm(jvinfo.typ, NULL, NULL);
+    Type *slottype = julia_struct_to_llvm(ctx, jvinfo.typ, NULL, NULL);
     // pass the address of an alloca'd thing, not a box
     // since those are immutable.
     Value *slot = emit_static_alloca(ctx, slottype);
@@ -806,7 +806,7 @@ static jl_cgval_t emit_cglobal(jl_codectx_t &ctx, jl_value_t **args, size_t narg
     else {
         rt = (jl_value_t*)jl_voidpointer_type;
     }
-    Type *lrt = julia_type_to_llvm(rt);
+    Type *lrt = julia_type_to_llvm(ctx, rt);
 
     interpret_symbol_arg(ctx, sym, args[1], "cglobal", false);
 
@@ -1030,7 +1030,7 @@ static jl_cgval_t emit_llvmcall(jl_codectx_t &ctx, jl_value_t **args, size_t nar
     for (size_t i = 0; i < nargt; ++i) {
         jl_value_t *tti = jl_svecref(tt,i);
         bool toboxed;
-        Type *t = julia_type_to_llvm(tti, &toboxed);
+        Type *t = julia_type_to_llvm(ctx, tti, &toboxed);
         argtypes.push_back(t);
         if (4 + i > nargs) {
             jl_error("Missing arguments to llvmcall!");
@@ -1045,7 +1045,7 @@ static jl_cgval_t emit_llvmcall(jl_codectx_t &ctx, jl_value_t **args, size_t nar
 
     Function *f;
     bool retboxed;
-    Type *rettype = julia_type_to_llvm(rtt, &retboxed);
+    Type *rettype = julia_type_to_llvm(ctx, rtt, &retboxed);
     if (isString) {
         // Make sure to find a unique name
         std::string ir_name;
@@ -1212,12 +1212,16 @@ public:
     jl_unionall_t *unionall_env; // UnionAll environment for `at` and `rt`
     size_t nargs; // number of actual arguments (can be different from the size of at when varargs)
     size_t isVa;
+    jl_codegen_params_t *ctx;
 
-    function_sig_t(Type *lrt, jl_value_t *rt, bool retboxed, jl_svec_t *at, jl_unionall_t *unionall_env, size_t nargs, size_t isVa, CallingConv::ID cc, bool llvmcall)
+    function_sig_t(Type *lrt, jl_value_t *rt, bool retboxed,
+            jl_svec_t *at, jl_unionall_t *unionall_env, size_t nargs, size_t isVa,
+            CallingConv::ID cc, bool llvmcall,
+            jl_codegen_params_t *ctx)
       : fargt_vasig(NULL), lrt(lrt), retboxed(retboxed),
         prt(NULL), sret(0), cc(cc), llvmcall(llvmcall),
         functype(NULL), at(at), rt(rt), unionall_env(unionall_env),
-        nargs(nargs), isVa(isVa)
+        nargs(nargs), isVa(isVa), ctx(ctx)
     {
         err_msg = generate_func_sig();
         if (err_msg.empty())
@@ -1313,7 +1317,7 @@ std::string generate_func_sig()
                 }
             }
 
-            t = julia_struct_to_llvm(tti, unionall_env, &isboxed);
+            t = _julia_struct_to_llvm(ctx, tti, unionall_env, &isboxed);
             if (isboxed)
                 t = T_prjlvalue;
             if (t == NULL || t == T_void) {
@@ -1415,6 +1419,7 @@ static std::pair<CallingConv::ID, bool> convert_cconv(jl_sym_t *lhd)
 
 static const std::string verify_ccall_sig(size_t nccallargs, jl_value_t *&rt, jl_value_t *at,
                                           jl_unionall_t *unionall_env, jl_svec_t *sparam_vals, const char *funcName,
+                                          jl_codegen_params_t *ctx,
                                           size_t &nargt, bool &isVa, Type *&lrt, bool &retboxed, bool &static_rt)
 {
     assert(rt && !jl_is_abstract_ref_type(rt));
@@ -1426,7 +1431,7 @@ static const std::string verify_ccall_sig(size_t nccallargs, jl_value_t *&rt, jl
         rt = (jl_value_t*)jl_any_type;
     }
 
-    lrt = julia_struct_to_llvm(rt, unionall_env, &retboxed);
+    lrt = _julia_struct_to_llvm(ctx, rt, unionall_env, &retboxed);
     if (lrt == NULL)
         return "ccall: return type doesn't correspond to a C type";
     else if (retboxed)
@@ -1552,6 +1557,7 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
             nccallargs, rt, at, unionall,
             ctx.spvals_ptr == NULL ? ctx.linfo->sparam_vals : NULL,
             ctx.funcName.c_str(),
+            &ctx.emission_context,
             /* outputs: */
             nargt, isVa, lrt, retboxed, static_rt);
     if (!err.empty()) {
@@ -1638,7 +1644,7 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
             isboxed = false;
         }
         else {
-            largty = julia_struct_to_llvm(tti, unionall, &isboxed);
+            largty = julia_struct_to_llvm(ctx, tti, unionall, &isboxed);
         }
         if (isboxed) {
             ary = boxed(ctx, argv[0]);
@@ -1808,7 +1814,7 @@ static jl_cgval_t emit_ccall(jl_codectx_t &ctx, jl_value_t **args, size_t nargs)
     }
 
     function_sig_t sig(lrt, rt, retboxed, (jl_svec_t*)at, unionall, nccallargs,
-                       isVa, cc, llvmcall);
+                       isVa, cc, llvmcall, &ctx.emission_context);
     jl_cgval_t retval = sig.emit_a_ccall(
             ctx,
             symarg,
@@ -2055,7 +2061,7 @@ jl_cgval_t function_sig_t::emit_a_ccall(
         }
     }
     else {
-        Type *jlrt = julia_type_to_llvm(rt, &jlretboxed); // compute the real "julian" return type and compute whether it is boxed
+        Type *jlrt = julia_type_to_llvm(ctx, rt, &jlretboxed); // compute the real "julian" return type and compute whether it is boxed
         if (jlretboxed) {
             jlrt = T_prjlvalue;
         }

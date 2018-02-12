@@ -683,8 +683,6 @@ static void jl_write_values(jl_serializer_state *s)
             else if (jl_is_datatype(v)) {
                 jl_datatype_t *dt = (jl_datatype_t*)v;
                 jl_datatype_t *newdt = (jl_datatype_t*)&s->s->buf[reloc_offset];
-                newdt->struct_decl = NULL;
-                newdt->ditype = NULL;
                 if (dt->layout != NULL) {
                     size_t nf = dt->layout->nfields;
                     size_t fieldsize = jl_fielddesc_size(dt->layout->fielddesc_type);

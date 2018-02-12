@@ -65,7 +65,9 @@ typedef std::tuple<std::unique_ptr<Module>, jl_llvm_functions_t, jl_value_t*, ui
 typedef struct {
     // outputs
     jl_codegen_call_targets_t workqueue;
-    std::map<void *, GlobalVariable*> globals;
+    std::map<void *, GlobalVariable *> globals;
+    std::map<jl_datatype_t *, DIType *> ditypes;
+    std::map<jl_datatype_t *, Type *> llvmtypes;
     // inputs
     size_t world = 0;
     const jl_cgparams_t *params = &jl_default_cgparams;
