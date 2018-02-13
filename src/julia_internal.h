@@ -594,7 +594,7 @@ static inline void jl_set_gc_and_wait(void)
 
 JL_DLLEXPORT jl_value_t *jl_dump_fptr_asm(uint64_t fptr, int raw_mc, const char* asm_variant);
 
-void *jl_create_native(jl_array_t *methods);
+void *jl_create_native(jl_array_t *methods, const jl_cgparams_t cgparams);
 void jl_dump_native(void *native_code,
         const char *bc_fname, const char *unopt_bc_fname, const char *obj_fname,
         const char *sysimg_data, size_t sysimg_len);
