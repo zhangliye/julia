@@ -321,9 +321,6 @@ static Function *jlgetnthfieldchecked_func;
 //static Function *jlsetnthfield_func;
 #ifdef _OS_WINDOWS_
 static Function *resetstkoflw_func;
-#if defined(_CPU_X86_64_)
-Function *juliapersonality_func;
-#endif
 #endif
 static Function *diff_gc_total_bytes_func;
 static Function *jlarray_data_owner_func;
@@ -6055,11 +6052,6 @@ static void init_julia_llvm_env(Module *m)
     resetstkoflw_func = Function::Create(FunctionType::get(T_int32, false),
             Function::ExternalLinkage, "_resetstkoflw", m);
     add_named_global(resetstkoflw_func, &_resetstkoflw);
-#if defined(_CPU_X86_64_)
-    juliapersonality_func = Function::Create(FunctionType::get(T_int32, true),
-            Function::ExternalLinkage, "__julia_personality", m);
-    add_named_global(juliapersonality_func, &__julia_personality);
-#endif
 #ifndef FORCE_ELF
 #if defined(_CPU_X86_64_)
 #if defined(_COMPILER_MINGW_)

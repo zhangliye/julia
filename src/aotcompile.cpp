@@ -39,20 +39,12 @@ static T *addComdat(T *G)
         // Add comdat information to make MSVC link.exe happy
         // it's valid to emit this for ld.exe too,
         // but makes it very slow to link for no benefit
-        if (G->getParent() == shadow_output) {
 #if defined(_COMPILER_MICROSOFT_)
-            Comdat *jl_Comdat = G->getParent()->getOrInsertComdat(G->getName());
-            // ELF only supports Comdat::Any
-            jl_Comdat->setSelectionKind(Comdat::NoDuplicates);
-            G->setComdat(jl_Comdat);
+        Comdat *jl_Comdat = G->getParent()->getOrInsertComdat(G->getName());
+        // ELF only supports Comdat::Any
+        jl_Comdat->setSelectionKind(Comdat::NoDuplicates);
+        G->setComdat(jl_Comdat);
 #endif
-#if defined(_CPU_X86_64_)
-            // Add unwind exception personalities to functions to handle async exceptions
-            assert(!juliapersonality_func || juliapersonality_func->getParent() == shadow_output);
-            if (Function *F = dyn_cast<Function>(G))
-                F->setPersonalityFn(juliapersonality_func);
-#endif
-        }
         // add __declspec(dllexport) to everything marked for export
         if (G->getLinkage() == GlobalValue::ExternalLinkage)
             G->setDLLStorageClass(GlobalValue::DLLExportStorageClass);
@@ -299,6 +291,14 @@ void *jl_create_native(jl_array_t *methods)
         data->jl_sysimg_gvars.push_back(G);
     }
 
+#if defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)
+    Type *T_int32 = Type::getInt32Ty(clone->getContext());
+    Function *juliapersonality_func =
+       Function::Create(FunctionType::get(T_int32, true),
+           Function::ExternalLinkage, "__julia_personality", clone.get());
+    juliapersonality_func->setDLLStorageClass(GlobalValue::DLLImportStorageClass);
+#endif
+
     // move everything inside, now that we've merged everything
     // (before adding the exported headers)
     for (GlobalObject &G : clone->global_objects()) {
@@ -306,6 +306,11 @@ void *jl_create_native(jl_array_t *methods)
             G.setLinkage(Function::InternalLinkage);
             makeSafeName(G);
             addComdat(&G);
+#if defined(_OS_WINDOWS_) && defined(_CPU_X86_64_)
+            // Add unwind exception personalities to functions to handle async exceptions
+            if (Function *F = dyn_cast<Function>(&G))
+                F->setPersonalityFn(juliapersonality_func);
+#endif
         }
     }
 
