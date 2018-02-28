@@ -471,6 +471,34 @@ end
 
 ## explicit project & manifest API ##
 
+# Parse a project file and return the project uuid + name as well as
+# the dependencies name => uuid
+function explicit_project_deps_get(project_file::String)
+    deps = Dict{String, UUID}()
+    root_name = nothing
+    root_uuid = dummy_uuid(project_file)
+    open(project_file) do io
+        state = :top
+        for line in eachline(io)
+            if state == :top
+                if contains(line, re_section)
+                    state = contains(line, re_section_deps) ? :deps : :other
+                elseif (m = match(re_name_to_string, line)) != nothing
+                    root_name = String(m.captures[1])
+                elseif (m = match(re_uuid_to_string, line)) != nothing
+                    root_uuid = UUID(m.captures[1])
+                end
+            elseif state == :deps
+                if (m = match(re_key_to_string, line)) != nothing
+                    deps[m.captures[1]] = UUID(m.captures[2])
+                end
+            elseif contains(line, re_section)
+                state = :deps
+            end
+        end
+    end
+    return root_name, root_uuid, deps
+end
 # find project file root or deps `name => uuid` mapping
 #  - `false` means: did not find `name`
 #  - `true` means: found `name` without UUID
@@ -480,32 +508,11 @@ end
 # and the project file does not have a top-level `uuid` mapping
 # it is not currently supported to have a name in `deps` mapped to anything
 # besides a UUID, so otherwise the answer is `false` or a UUID value
-
 function explicit_project_deps_get(project_file::String, name::String)::Union{Bool,UUID}
-    open(project_file) do io
-        root_name = nothing
-        root_uuid = dummy_uuid(project_file)
-        state = :top
-        for line in eachline(io)
-            if state == :top
-                if contains(line, re_section)
-                    root_name == name && return root_uuid
-                    state = contains(line, re_section_deps) ? :deps : :other
-                elseif (m = match(re_name_to_string, line)) != nothing
-                    root_name = String(m.captures[1])
-                elseif (m = match(re_uuid_to_string, line)) != nothing
-                    root_uuid = UUID(m.captures[1])
-                end
-            elseif state == :deps
-                if (m = match(re_key_to_string, line)) != nothing
-                    m.captures[1] == name && return UUID(m.captures[2])
-                end
-            elseif contains(line, re_section)
-                state = :deps
-            end
-        end
-        return false
-    end
+    root_name, root_uuid, deps = explicit_project_deps_get(project_file)
+    root_name == name && return root_uuid
+    haskey(deps, name) && return deps[name]
+    return false
 end
 
 # find `where` stanza and `name` in its deps and return its UUID
