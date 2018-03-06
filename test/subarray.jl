@@ -354,7 +354,7 @@ sA = view(A, 2:2, 1:5, :)
 @test size(sA) == (1, 5, 8)
 @test axes(sA) === (Base.OneTo(1), Base.OneTo(5), Base.OneTo(8))
 @test sA[1, 2, 1:8][:] == [5:15:120;]
-sA[2:5:end] = -1
+sA[2:5:end] .= -1
 @test all(sA[2:5:end] .== -1)
 @test all(A[5:15:120] .== -1)
 @test @inferred(strides(sA)) == (1,3,15)

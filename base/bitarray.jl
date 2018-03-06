@@ -580,7 +580,7 @@ function gen_bitarray_from_itr(itr, st)
         end
     end
     if ind > 1
-        @inbounds C[ind:bitcache_size] = false
+        @inbounds (C[ind:bitcache_size] .= false; C)
         resize!(B, length(B) + ind - 1)
         dumpbitcache(Bc, cind, C)
     end
@@ -604,7 +604,7 @@ function fill_bitarray_from_itr!(B::BitArray, itr, st)
         end
     end
     if ind > 1
-        @inbounds C[ind:bitcache_size] = false
+        @inbounds (C[ind:bitcache_size] .= false; nothing)
         dumpbitcache(Bc, cind, C)
     end
     return B
@@ -649,43 +649,45 @@ end
 indexoffset(i) = first(i)-1
 indexoffset(::Colon) = 0
 
-@inline function setindex!(B::BitArray, x, J0::Union{Colon,UnitRange{Int}})
-    I0 = to_indices(B, (J0,))[1]
-    @boundscheck checkbounds(B, I0)
-    y = Bool(x)
-    l0 = length(I0)
-    l0 == 0 && return B
-    f0 = indexoffset(I0)+1
-    fill_chunks!(B.chunks, y, f0, l0)
-    return B
-end
+# TODO: re-implement this guy
+# @inline function setindex!(B::BitArray, x, J0::Union{UnitRange{Int}})
+#     I0 = to_indices(B, (J0,))[1]
+#     @boundscheck checkbounds(B, I0)
+#     y = Bool(x)
+#     l0 = length(I0)
+#     l0 == 0 && return B
+#     f0 = indexoffset(I0)+1
+#     fill_chunks!(B.chunks, y, f0, l0)
+#     return B
+# end
 @propagate_inbounds function setindex!(B::BitArray, X::AbstractArray, J0::Union{Colon,UnitRange{Int}})
     _setindex!(IndexStyle(B), B, X, to_indices(B, (J0,))[1])
 end
 
 # logical indexing
 
+# TODO: reimplement these guys
 # When indexing with a BitArray, we can operate whole chunks at a time for a ~100x gain
-@inline function setindex!(B::BitArray, x, I::BitArray)
-    @boundscheck checkbounds(B, I)
-    _unsafe_setindex!(B, x, I)
-end
-function _unsafe_setindex!(B::BitArray, x, I::BitArray)
-    y = convert(Bool, x)
-    Bc = B.chunks
-    Ic = I.chunks
-    length(Bc) == length(Ic) || throw_boundserror(B, I)
-    @inbounds if y
-        for i = 1:length(Bc)
-            Bc[i] |= Ic[i]
-        end
-    else
-        for i = 1:length(Bc)
-            Bc[i] &= ~Ic[i]
-        end
-    end
-    return B
-end
+# @inline function setindex!(B::BitArray, x, I::BitArray)
+#     @boundscheck checkbounds(B, I)
+#     _unsafe_setindex!(B, x, I)
+# end
+# function _unsafe_setindex!(B::BitArray, x, I::BitArray)
+#     y = convert(Bool, x)
+#     Bc = B.chunks
+#     Ic = I.chunks
+#     length(Bc) == length(Ic) || throw_boundserror(B, I)
+#     @inbounds if y
+#         for i = 1:length(Bc)
+#             Bc[i] |= Ic[i]
+#         end
+#     else
+#         for i = 1:length(Bc)
+#             Bc[i] &= ~Ic[i]
+#         end
+#     end
+#     return B
+# end
 
 # Assigning an array of bools is more complicated, but we can still do some
 # work on chunks by combining X and I 64 bits at a time to improve perf by ~40%

@@ -969,7 +969,7 @@ end
 function _ispermutationvalid_permute!(perm::AbstractVector{<:Integer},
         checkspace::Vector{<:Integer})
     n = length(perm)
-    checkspace[1:n] = 0
+    checkspace[1:n] .= 0
     for k in perm
         (0 < k ≤ n) && ((checkspace[k] ⊻= 1) == 1) || return false
     end
@@ -2353,33 +2353,31 @@ function setindex!(A::SparseMatrixCSC{Tv,Ti}, v::Tv, i::Ti, j::Ti) where Tv wher
     return A
 end
 
-setindex!(A::SparseMatrixCSC, v::AbstractMatrix, i::Integer, J::AbstractVector{<:Integer}) = setindex!(A, v, [i], J)
-setindex!(A::SparseMatrixCSC, v::AbstractMatrix, I::AbstractVector{<:Integer}, j::Integer) = setindex!(A, v, I, [j])
-
-setindex!(A::SparseMatrixCSC, x::Number, i::Integer, J::AbstractVector{<:Integer}) = setindex!(A, x, [i], J)
-setindex!(A::SparseMatrixCSC, x::Number, I::AbstractVector{<:Integer}, j::Integer) = setindex!(A, x, I, [j])
+setindex!(A::SparseMatrixCSC, v::AbstractArray, i::Integer, J::AbstractVector{<:Integer}) = setindex!(A, v, [i], J)
+setindex!(A::SparseMatrixCSC, v::AbstractArray, I::AbstractVector{<:Integer}, j::Integer) = setindex!(A, v, I, [j])
 
 # Colon translation
-setindex!(A::SparseMatrixCSC, x, ::Colon)          = setindex!(A, x, 1:length(A))
-setindex!(A::SparseMatrixCSC, x, ::Colon, ::Colon) = setindex!(A, x, 1:size(A, 1), 1:size(A,2))
-setindex!(A::SparseMatrixCSC, x, ::Colon, j::Union{Integer, AbstractVector}) = setindex!(A, x, 1:size(A, 1), j)
-setindex!(A::SparseMatrixCSC, x, i::Union{Integer, AbstractVector}, ::Colon) = setindex!(A, x, i, 1:size(A, 2))
+setindex!(A::SparseMatrixCSC, x::AbstractArray, ::Colon)          = setindex!(A, x, 1:length(A))
+setindex!(A::SparseMatrixCSC, x::AbstractArray, ::Colon, ::Colon) = setindex!(A, x, 1:size(A, 1), 1:size(A,2))
+setindex!(A::SparseMatrixCSC, x::AbstractArray, ::Colon, j::Union{Integer, AbstractVector}) = setindex!(A, x, 1:size(A, 1), j)
+setindex!(A::SparseMatrixCSC, x::AbstractArray, i::Union{Integer, AbstractVector}, ::Colon) = setindex!(A, x, i, 1:size(A, 2))
 
-function setindex!(A::SparseMatrixCSC{Tv}, x::Number,
-        I::AbstractVector{<:Integer}, J::AbstractVector{<:Integer}) where Tv
-    if isempty(I) || isempty(J); return A; end
-    # lt=≤ to check for strict sorting
-    if !issorted(I, lt=≤); I = sort!(unique(I)); end
-    if !issorted(J, lt=≤); J = sort!(unique(J)); end
-    if (I[1] < 1 || I[end] > A.m) || (J[1] < 1 || J[end] > A.n)
-        throw(BoundsError(A, (I, J)))
-    end
-    if x == 0
-        _spsetz_setindex!(A, I, J)
-    else
-        _spsetnz_setindex!(A, convert(Tv, x), I, J)
-    end
-end
+# TODO: Revamp this guy to use broadcast
+# function setindex!(A::SparseMatrixCSC{Tv}, x::Number,
+#         I::AbstractVector{<:Integer}, J::AbstractVector{<:Integer}) where Tv
+#     if isempty(I) || isempty(J); return A; end
+#     # lt=≤ to check for strict sorting
+#     if !issorted(I, lt=≤); I = sort!(unique(I)); end
+#     if !issorted(J, lt=≤); J = sort!(unique(J)); end
+#     if (I[1] < 1 || I[end] > A.m) || (J[1] < 1 || J[end] > A.n)
+#         throw(BoundsError(A, (I, J)))
+#     end
+#     if x == 0
+#         _spsetz_setindex!(A, I, J)
+#     else
+#         _spsetnz_setindex!(A, convert(Tv, x), I, J)
+#     end
+# end
 """
 Helper method for immediately preceding setindex! method. For all (i,j) such that i in I and
 j in J, assigns zero to A[i,j] if A[i,j] is a presently-stored entry, and otherwise does nothing.
@@ -2585,7 +2583,7 @@ function setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Abst
     asgn_col = J[colB]
 
     I_asgn = falses(m)
-    I_asgn[I] = true
+    I_asgn[I] .= true
 
     ptrS = 1
 

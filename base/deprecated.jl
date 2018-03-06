@@ -1401,6 +1401,25 @@ function lastindex(a, n)
     last(axes(a, n))
 end
 
+# PR
+function deprecate_scalar_setindex_broadcast_message(v, I...)
+    value = (Broadcast.BroadcastStyle(typeof(v)) === Broadcast.Scalar() ? "x" : "(x,)")
+    "using `A[I...] = x` to implicitly broadcast `x` across many locations is deprecated. Use `A[I...] .= $value` instead."
+end
+deprecate_scalar_setindex_broadcast_message(v, ::Colon, ::Vararg{Colon}) =
+    "using `A[I...] = x` to implicitly broadcast `x` across many locations is deprecated. Use `fill!(A, x)` instead."
+
+function _iterable(v, I...)
+    depwarn(deprecate_scalar_setindex_broadcast_message(v, I...), :setindex!)
+    Iterators.repeated(v)
+end
+function setindex!(B::BitArray, x, I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
+    depwarn(deprecate_scalar_setindex_broadcast_message(x, I0, I...), :setindex!)
+    B[I0, I...] .= (x,)
+    B
+end
+
+
 @deprecate_binding repmat repeat
 
 @deprecate Timer(timeout, repeat) Timer(timeout, interval = repeat)

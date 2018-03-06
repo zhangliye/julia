@@ -375,7 +375,7 @@ end
             end
         end
         if ind > 1
-            @inbounds C[ind:bitcache_size] = false
+            fill!(@inbounds(view(C, ind:bitcache_size)), false)
             dumpbitcache(Bc, cind, C)
         end
         return B

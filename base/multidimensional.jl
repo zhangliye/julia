@@ -662,12 +662,11 @@ function _setindex!(l::IndexStyle, A::AbstractArray, x, I::Union{Real, AbstractA
     A
 end
 
-_iterable(v::AbstractArray) = v
-_iterable(v) = Iterators.repeated(v)
+_iterable(v::AbstractArray, I...) = v
 @generated function _unsafe_setindex!(::IndexStyle, A::AbstractArray, x, I::Union{Real,AbstractArray}...)
     N = length(I)
     quote
-        x′ = _iterable(unalias(A, x))
+        x′ = _iterable(unalias(A, x), I...)
         @nexprs $N d->(I_d = unalias(A, I[d]))
         idxlens = @ncall $N index_lengths I
         @ncall $N setindex_shape_check x′ (d->idxlens[d])
@@ -1599,12 +1598,13 @@ end
     end
 end
 
-@inline function setindex!(B::BitArray, x,
-        I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
-    J = to_indices(B, (I0, I...))
-    @boundscheck checkbounds(B, J...)
-    _unsafe_setindex!(B, x, J...)
-end
+# TODO: reimplement this guy
+# @inline function setindex!(B::BitArray, x,
+#         I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
+#     J = to_indices(B, (I0, I...))
+#     @boundscheck checkbounds(B, J...)
+#     _unsafe_setindex!(B, x, J...)
+# end
 @propagate_inbounds function setindex!(B::BitArray, X::AbstractArray,
         I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
     _setindex!(IndexStyle(B), B, X, to_indices(B, (I0, I...))...)
@@ -1861,7 +1861,7 @@ julia> extrema(A, (1,2))
 """
 function extrema(A::AbstractArray, dims)
     sz = [size(A)...]
-    sz[[dims...]] = 1
+    sz[[dims...]] .= 1
     B = Array{Tuple{eltype(A),eltype(A)}}(undef, sz...)
     return extrema!(B, A)
 end

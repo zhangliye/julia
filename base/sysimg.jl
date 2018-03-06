@@ -89,7 +89,7 @@ if false
     # simple print definitions for debugging. enable these if something
     # goes wrong during bootstrap before printing code is available.
     # otherwise, they just just eventually get (noisily) overwritten later
-    global show, print, println
+    global show, print, println, string
     show(io::IO, x) = Core.show(io, x)
     print(io::IO, a...) = Core.print(io, a...)
     println(io::IO, x...) = Core.println(io, x...)
