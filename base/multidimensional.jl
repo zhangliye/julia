@@ -1598,20 +1598,26 @@ end
     end
 end
 
-# TODO: reimplement this guy
-# @inline function setindex!(B::BitArray, x,
-#         I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
-#     J = to_indices(B, (I0, I...))
-#     @boundscheck checkbounds(B, J...)
-#     _unsafe_setindex!(B, x, J...)
-# end
 @propagate_inbounds function setindex!(B::BitArray, X::AbstractArray,
         I0::Union{Colon,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Colon}...)
     _setindex!(IndexStyle(B), B, X, to_indices(B, (I0, I...))...)
 end
 
-@generated function _unsafe_setindex!(B::BitArray, x,
-        I0::Union{Slice,UnitRange{Int}}, I::Union{Int,UnitRange{Int},Slice}...)
+## fill! contiguous views of BitArrays with a single value
+function fill!(V::SubArray{Bool, <:Any, <:BitArray, Tuple{AbstractUnitRange{Int}}}, x)
+    B = V.parent
+    I0 = V.indices[1]
+    l0 = length(I0)
+    l0 == 0 && return V
+    fill_chunks!(B.chunks, Bool(x), first(I0), l0)
+    return V
+end
+
+fill!(V::SubArray{Bool, <:Any, <:BitArray, Tuple{AbstractUnitRange{Int}, Vararg{Union{Int,AbstractUnitRange{Int}}}}}, x) =
+    _unsafe_fill_indices!(V.parent, x, V.indices...)
+
+@generated function _unsafe_fill_indices!(B::BitArray, x,
+        I0::AbstractUnitRange{Int}, I::Union{Int,AbstractUnitRange{Int}}...)
     N = length(I)
     quote
         y = Bool(x)
@@ -1642,6 +1648,7 @@ end
         return B
     end
 end
+
 
 ## isassigned
 
