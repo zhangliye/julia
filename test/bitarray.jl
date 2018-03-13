@@ -408,12 +408,16 @@ timesofar("constructors")
 
         for (b2, k1, k2) in Channel(gen_setindex_data)
             # println(typeof(b2), " ", typeof(k1), " ", typeof(k2)) # uncomment to debug
-            if b2 isa AbstractArray || (k1 isa Integer && k2 isa Integer)
+            if b2 isa AbstractArray
                 for bb in (b2, view(b2, :), view(Array{Any}(b2), :))
                     @check_bit_operation setindex!(b1, bb, k1, k2) BitMatrix
                 end
             else
-                @check_bit_operation bcast_setindex!(b1, b2, k1, k2) BitMatrix
+                if k1 isa Integer && k2 isa Integer
+                    @check_bit_operation setindex!(b1, b2, k1, k2) BitMatrix
+                else
+                    @check_bit_operation bcast_setindex!(b1, b2, k1, k2) BitMatrix
+                end
             end
         end
 
@@ -422,7 +426,7 @@ timesofar("constructors")
         @check_bit_operation setindex!(b1, b2, m1, 1:m2) BitMatrix
         x = rand(Bool)
         b2 = bitrand(1, m2, 1)
-        @check_bit_operation setindex!(b1, x, m1, 1:m2, 1)  BitMatrix
+        @check_bit_operation bcast_setindex!(b1, x, m1, 1:m2, 1)  BitMatrix
         @check_bit_operation setindex!(b1, b2, m1, 1:m2, 1) BitMatrix
 
         b1 = bitrand(s1, s2, s3, s4)
@@ -468,7 +472,11 @@ timesofar("constructors")
 
         for (b2, k1, k2, k3, k4) in Channel(gen_setindex_data4)
             # println(typeof(b2), " ", typeof(k1), " ", typeof(k2), " ", typeof(k3), " ", typeof(k4)) # uncomment to debug
-            @check_bit_operation setindex!(b1, b2, k1, k2, k3, k4) BitArray{4}
+            if b2 isa Bool
+                @check_bit_operation bcast_setindex!(b1, b2, k1, k2, k3, k4) BitArray{4}
+            else
+                @check_bit_operation setindex!(b1, b2, k1, k2, k3, k4) BitArray{4}
+            end
         end
 
         for p1 = [rand(1:v1) 1 63 64 65 191 192 193]
