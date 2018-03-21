@@ -529,3 +529,77 @@ end
 let s = "   \$abc   "
     @test s[Base.shell_parse(s)[2]] == "abc"
 end
+
+# Sys.which() testing
+withenv("PATH" => Sys.BINDIR) do
+    julia_exe = abspath(joinpath(Sys.BINDIR, "julia"))
+    @static if Sys.iswindows()
+        julia_exe *= ".exe"
+    end
+
+    @test Sys.which("julia") == julia_exe
+    @test Sys.which(julia_exe) == julia_exe
+end
+
+mktempdir() do dir
+    withenv("PATH" => dir) do
+        # Test that files lacking executable permissions fail Sys.which
+        # but only on non-Windows systems, as Windows doesn't care...
+        foo_path = abspath(joinpath(dir, "foo"))
+        touch(foo_path)
+        chmod(foo_path, 0o777)
+        @static if !Sys.iswindows()
+            @test Sys.which("foo") == foo_path
+            @test Sys.which(foo_path) == foo_path
+
+            chmod(foo_path, 0o666)
+            @test_throws ErrorException Sys.which("foo")
+            @test_throws ErrorException Sys.which(foo_path)
+        end
+
+        # Test that completely missing files also fail
+        @test_throws ErrorException Sys.which("this_is_not_a_command")
+    end
+end
+
+mktempdir() do dir
+    pathsep = @static if Sys.iswindows() ";" else ":" end
+    withenv("PATH" => "$(dir)/bin1$(pathsep)$(dir)/bin2") do
+        # Test that we have proper priorities
+        mkpath(joinpath(dir, "bin1"))
+        mkpath(joinpath(dir, "bin2"))
+        foo1_path = abspath(joinpath(dir, "bin1", "foo"))
+        foo2_path = abspath(joinpath(dir, "bin2", "foo"))
+
+        touch(foo1_path)
+        touch(foo2_path)
+        chmod(foo1_path, 0o777)
+        chmod(foo2_path, 0o777)
+        @test Sys.which("foo") == foo1_path
+
+        # chmod() doesn't change which() on Windows, so don't bother to test that
+        @static if !Sys.iswindows()
+            chmod(foo1_path, 0o666)
+            @test Sys.which("foo") == foo2_path
+            chmod(foo1_path, 0o777)
+        end
+
+        @static if Sys.iswindows()
+            # On windows, check that pwd() takes precedence, except when we provide a path
+            cd("$(dir)/bin2") do
+                @test Sys.which("foo") == foo2_path
+                @test Sys.which(foo1_path) == foo1_path
+            end
+        end
+
+        @static if Sys.iswindows()
+            # On windows, check that "bin1/bar" will run "bin1/bar.exe"
+            bar_path = joinpath(dir, "bin1", "bar.exe")
+            touch(bar_path)
+            chmod(bar_path, 0o777)
+            cd("$(dir)") do
+                @test Sys.which("bin1/bar") == bar_path
+            end
+        end
+    end
+end
