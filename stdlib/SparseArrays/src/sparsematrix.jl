@@ -2326,10 +2326,10 @@ getindex(A::SparseMatrixCSC, I::AbstractVector{<:Integer}, J::AbstractVector{Boo
 getindex(A::SparseMatrixCSC, I::AbstractVector{Bool}, J::AbstractVector{<:Integer}) = A[findall(I),J]
 
 ## setindex!
-function setindex!(A::SparseMatrixCSC{Tv,Ti}, v, i::Integer, j::Integer) where Tv where Ti
-    setindex!(A, convert(Tv, v), convert(Ti, i), convert(Ti, j))
-end
-function setindex!(A::SparseMatrixCSC{Tv,Ti}, v::Tv, i::Ti, j::Ti) where Tv where Ti<:Integer
+function setindex!(A::SparseMatrixCSC{Tv,Ti}, _v, _i::Integer, _j::Integer) where Tv where Ti
+    v = convert(Tv, _v)
+    i = convert(Ti, _i)
+    j = convert(Ti, _j)
     if !((1 <= i <= A.m) & (1 <= j <= A.n))
         throw(BoundsError(A, (i,j)))
     end
@@ -2521,13 +2521,17 @@ function _spsetnz_setindex!(A::SparseMatrixCSC{Tv}, x::Tv,
     return A
 end
 
+setindex!(A::SparseMatrixCSC{Tv,Ti}, S::Matrix, I::Integer, J::Integer) where {Tv,Ti} = setindex!(A, convert(Tv, S), I, J)
 setindex!(A::SparseMatrixCSC{Tv,Ti}, S::Matrix, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {Tv,Ti,T<:Integer} =
-      setindex!(A, convert(SparseMatrixCSC{Tv,Ti}, S), I, J)
+    setindex!(A, convert(SparseMatrixCSC{Tv,Ti}, S), I, J)
 
+setindex!(A::SparseMatrixCSC, v::AbstractVector, I::Integer, J::Integer) = setindex!(A, convert(Tv, v), I, J)
 setindex!(A::SparseMatrixCSC, v::AbstractVector, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {T<:Integer} =
-      setindex!(A, reshape(v, length(I), length(J)), I, J)
+    setindex!(A, reshape(v, length(I), length(J)), I, J)
 
 # A[I,J] = B
+setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Integer, J::Integer) where {Tv,Ti} =
+    setindex!(A, convert(Tv, I, J), I, J)
 function setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {Tv,Ti,T<:Integer}
     if size(B,1) != length(I) || size(B,2) != length(J)
         throw(DimensionMismatch(""))
