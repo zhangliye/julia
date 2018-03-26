@@ -813,6 +813,37 @@ end
 
 Base.@propagate_inbounds dotview(args...) = Base.maybeview(args...)
 
+## In specific instances, we can broadcast masked BitArrays whole chunks at a time
+# Very intentionally do not support much functionality here: scalar indexing would be O(n)
+struct BitMaskedBitArray{N,M}
+    parent::BitArray{N}
+    mask::BitArray{M}
+    BitMaskedBitArray{N,M}(parent, mask) where {N,M} = new(parent, mask)
+end
+@inline function BitMaskedBitArray(parent::BitArray{N}, mask::BitArray{M}) where {N,M}
+    @boundscheck checkbounds(parent, mask)
+    BitMaskedBitArray{N,M}(parent, mask)
+end
+Base.@propagate_inbounds dotview(B::BitArray, i::BitArray) = BitMaskedBitArray(B, i)
+
+Base.show(io::IO, B::BitMaskedBitArray) = foreach(arg->show(io, arg), (typeof(B), (B.parent, B.mask)))
+broadcast!(::typeof(identity), B::BitMaskedBitArray, b::Bool) = fill!(B, b)
+broadcast!(f, B::BitMaskedBitArray, args...) = broadcast!(f, SubArray(B.parent, to_indices(B.parent, (B.mask,))), args...)
+function Base.fill!(B::BitMaskedBitArray, b::Bool)
+    Bc = B.parent.chunks
+    Ic = B.mask.chunks
+    @inbounds if b
+        for i = 1:length(Bc)
+            Bc[i] |= Ic[i]
+        end
+    else
+        for i = 1:length(Bc)
+            Bc[i] &= ~Ic[i]
+        end
+    end
+    return B
+end
+
 ############################################################
 # The parser turns @. into a call to the __dot__ macro,
 # which converts all function calls and assignments into
