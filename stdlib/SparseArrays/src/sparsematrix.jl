@@ -2522,17 +2522,17 @@ function _spsetnz_setindex!(A::SparseMatrixCSC{Tv}, x::Tv,
 end
 
 setindex!(A::SparseMatrixCSC{Tv,Ti}, S::Matrix, I::Integer, J::Integer) where {Tv,Ti} = setindex!(A, convert(Tv, S), I, J)
-setindex!(A::SparseMatrixCSC{Tv,Ti}, S::Matrix, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {Tv,Ti,T<:Integer} =
+setindex!(A::SparseMatrixCSC{Tv,Ti}, S::Matrix, I::Union{Integer, AbstractVector{<:Integer}}, J::Union{Integer, AbstractVector{<:Integer}}) where {Tv,Ti} =
     setindex!(A, convert(SparseMatrixCSC{Tv,Ti}, S), I, J)
 
 setindex!(A::SparseMatrixCSC, v::AbstractVector, I::Integer, J::Integer) = setindex!(A, convert(Tv, v), I, J)
-setindex!(A::SparseMatrixCSC, v::AbstractVector, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {T<:Integer} =
+setindex!(A::SparseMatrixCSC, v::AbstractVector, I::Union{Integer, AbstractVector{<:Integer}}, J::Union{Integer, AbstractVector{<:Integer}}) =
     setindex!(A, reshape(v, length(I), length(J)), I, J)
 
-# A[I,J] = B
+# Nonscalar A[I,J] = B
 setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Integer, J::Integer) where {Tv,Ti} =
     setindex!(A, convert(Tv, I, J), I, J)
-function setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Union{Integer, AbstractVector{T}}, J::Union{Integer, AbstractVector{T}}) where {Tv,Ti,T<:Integer}
+function setindex!(A::SparseMatrixCSC{Tv,Ti}, B::SparseMatrixCSC{Tv,Ti}, I::Union{Integer, AbstractVector{<:Integer}}, J::Union{Integer, AbstractVector{<:Integer}}) where {Tv,Ti}
     if size(B,1) != length(I) || size(B,2) != length(J)
         throw(DimensionMismatch(""))
     end

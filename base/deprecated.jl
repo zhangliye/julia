@@ -1402,8 +1402,10 @@ function lastindex(a, n)
 end
 
 # PR
+_axes(::Ref) = ()
+_axes(x) = axes(x)
 function deprecate_scalar_setindex_broadcast_message(v, I...)
-    value = (Broadcast.BroadcastStyle(typeof(v)) === Broadcast.Scalar() ? "x" : "(x,)")
+    value = (_axes(Base.Broadcast.broadcastable(v)) == () ? "x" : "(x,)")
     "using `A[I...] = x` to implicitly broadcast `x` across many locations is deprecated. Use `A[I...] .= $value` instead."
 end
 deprecate_scalar_setindex_broadcast_message(v, ::Colon, ::Vararg{Colon}) =

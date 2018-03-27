@@ -828,7 +828,8 @@ Base.@propagate_inbounds dotview(B::BitArray, i::BitArray) = BitMaskedBitArray(B
 
 Base.show(io::IO, B::BitMaskedBitArray) = foreach(arg->show(io, arg), (typeof(B), (B.parent, B.mask)))
 broadcast!(::typeof(identity), B::BitMaskedBitArray, b::Bool) = fill!(B, b)
-broadcast!(f, B::BitMaskedBitArray, args...) = broadcast!(f, SubArray(B.parent, to_indices(B.parent, (B.mask,))), args...)
+broadcast!(f::Tf, B::BitMaskedBitArray, As::Vararg{Any,N}) where {Tf,N} =
+    broadcast!(f, SubArray(B.parent, to_indices(B.parent, (B.mask,))), As...)
 function Base.fill!(B::BitMaskedBitArray, b::Bool)
     Bc = B.parent.chunks
     Ic = B.mask.chunks
