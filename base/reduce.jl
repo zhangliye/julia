@@ -32,6 +32,20 @@ mul_prod(x,y) = x * y
 mul_prod(x::SmallSigned,y::SmallSigned) = Int(x) * Int(y)
 mul_prod(x::SmallUnsigned,y::SmallUnsigned) = UInt(x) * UInt(y)
 
+"""
+    Base.ConvertOp{T}(op)(x,y)
+
+An operator which converts `x` and `y` to type `T` before performing the `op`.
+
+The main purpose is for use in [`cumsum!`](@ref) and [`cumprod!`](@ref), where `T` is determined by the output array.
+"""
+struct ConvertOp{T,O} <: Function
+    op::O
+end
+ConvertOp{T}(op::O) where {T,O} = ConvertOp{T,O}(op)
+(c::ConvertOp{T})(x,y) where {T} = c.op(convert(T,x),convert(T,y))
+reduce_first(c::ConvertOp{T},x) where {T} = reduce_first(c.op, convert(T,x))
+
 ## foldl && mapfoldl
 
 @noinline function mapfoldl_impl(f, op, v0, itr, i)
