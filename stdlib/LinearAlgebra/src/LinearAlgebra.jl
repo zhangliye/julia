@@ -20,7 +20,7 @@ import Base: USE_BLAS64, abs, acos, acosh, acot, acoth, acsc, acsch, adjoint, as
 using Base: hvcat_fill, iszero, IndexLinear, _length, promote_op, promote_typeof,
     @propagate_inbounds, @pure, reduce, typed_vcat
 # We use `_length` because of non-1 indices; releases after julia 0.5
-# can go back to `length`. `_length(A)` is equivalent to `length(linearindices(A))`.
+# can go back to `length`. `_length(A)` is equivalent to `length(LinearIndices(A))`.
 
 export
 # Modules

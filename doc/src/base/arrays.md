@@ -43,7 +43,7 @@ Base.axes(::Any)
 Base.axes(::AbstractArray, ::Any)
 Base.length(::AbstractArray)
 Base.eachindex
-Base.linearindices
+Base.LinearIndices
 Base.IndexStyle
 Base.conj!
 Base.stride
