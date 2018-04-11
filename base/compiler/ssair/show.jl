@@ -80,7 +80,7 @@ function Base.show(io::IO, code::IRCode)
     used = IdSet{Int}()
     Base.println(io, "Code")
     foreach(stmt->scan_ssa_use!(used, stmt), code.stmts)
-    foreach(((_a, _b, node, _d),) -> scan_ssa_use!(used, node), code.new_nodes)
+    foreach(entry -> scan_ssa_use!(used, entry.node), code.new_nodes)
     if isempty(used)
         maxsize = 0
     else
@@ -90,7 +90,7 @@ function Base.show(io::IO, code::IRCode)
     cfg = code.cfg
     max_bb_idx_size = length(string(length(cfg.blocks)))
     bb_idx = 1
-    perm = sortperm(code.new_nodes, by = x->x[1])
+    perm = sortperm(code.new_nodes, by = x->x.pos)
     new_nodes_perm = Iterators.Stateful(perm)
     for idx in eachindex(code.stmts)
         if !isassigned(code.stmts, idx)
@@ -116,9 +116,9 @@ function Base.show(io::IO, code::IRCode)
             print_sep = true
         end
         floop = true
-        while !isempty(new_nodes_perm) && code.new_nodes[peek(new_nodes_perm)][1] == idx
+        while !isempty(new_nodes_perm) && code.new_nodes[peek(new_nodes_perm)].pos == idx
             node_idx = popfirst!(new_nodes_perm)
-            _, reverse_affinity, typ, node, line = code.new_nodes[node_idx]
+            new_node = code.new_nodes[node_idx]
             node_idx += length(code.stmts)
             if print_sep
                 if floop
@@ -129,13 +129,13 @@ function Base.show(io::IO, code::IRCode)
             end
             print_sep = true
             floop = false
-            print_ssa_typ = !isa(node, PiNode) && node_idx in used
+            print_ssa_typ = !isa(new_node.node, PiNode) && node_idx in used
             Base.with_output_color(:yellow, io) do io′
-                print_node(io′, node_idx, node, used, maxsize; color = false,
-                    print_typ=!print_ssa_typ || (isa(node, Expr) && typ != node.typ))
+                print_node(io′, node_idx, new_node.node, used, maxsize; color = false,
+                    print_typ=!print_ssa_typ || (isa(new_node.node, Expr) && new_node.typ != new_node.node.typ))
             end
             if print_ssa_typ
-                Base.printstyled(io, "::$(typ)", color=:red)
+                Base.printstyled(io, "::$(new_node.typ)", color=:red)
             end
             Base.println(io)
         end

@@ -420,10 +420,14 @@ function domsort_ssa!(ir, domtree)
     end
     result_stmts = Any[renumber_ssa!(result_stmts[i], inst_rename, true) for i in 1:length(result_stmts)]
     cfg = CFG(new_bbs, Int[first(bb.stmts) for bb in new_bbs[2:end]])
-    new_new_nodes = NewNode[(inst_rename[pos].id, reverse_affinity, typ,
-        renumber_ssa!(isa(node, PhiNode) ?
-        rename_phinode_edges(node, 0, result_order, bb_rename) : node,
-        inst_rename, true), lno) for (pos, reverse_affinity, typ, node, lno) in ir.new_nodes]
+    # (pos, reverse_affinity, typ, node, lno)
+    new_new_nodes = NewNode[
+        NewNode(entry,
+            pos = inst_rename[entry.pos].id,
+            node = renumber_ssa!(isa(entry.node, PhiNode) ?
+                rename_phinode_edges(entry.node, 0, result_order, bb_rename) : entry.node,
+                inst_rename, true)
+        ) for entry in ir.new_nodes]
     new_ir = IRCode(ir, result_stmts, result_types, result_ltable, cfg, new_new_nodes)
     new_ir
 end
@@ -595,12 +599,12 @@ function construct_ssa!(ci::CodeInfo, code::Vector{Any}, ir::IRCode, domtree::Do
             end
             typ = incoming_val == undef_token ? MaybeUndef(Union{}) : typ_for_val(incoming_val, ci)
             new_node_id = ssaval - length(ir.stmts)
-            old_insert, reverse_affinity, old_typ, _, old_line = ir.new_nodes[new_node_id]
+            old_entry = ir.new_nodes[new_node_id]
             if isa(typ, DelayedTyp)
                 push!(type_refine_phi, ssaval)
             end
-            new_typ = isa(typ, DelayedTyp) ? Union{} : tmerge(old_typ, typ)
-            ir.new_nodes[new_node_id] = (old_insert, reverse_affinity, new_typ, node, old_line)
+            new_typ = isa(typ, DelayedTyp) ? Union{} : tmerge(old_entry.typ, typ)
+            ir.new_nodes[new_node_id] = NewNode(old_entry, typ=new_typ, node=node)
             incoming_vals[slot] = NewSSAValue(ssaval)
         end
         (item in visited) && continue
@@ -659,7 +663,7 @@ function construct_ssa!(ci::CodeInfo, code::Vector{Any}, ir::IRCode, domtree::Do
                                 typ = MaybeUndef(Union{})
                             end
                             push!(phicnodes[exc][cidx][3].values,
-                                NewSSAValue(insert_node!(ir, idx+1, typ, node, true).id))
+                                NewSSAValue(insert_node!(ir, idx, typ, node, true).id))
                         end
                     end
                 end
@@ -710,16 +714,16 @@ function construct_ssa!(ci::CodeInfo, code::Vector{Any}, ir::IRCode, domtree::Do
         for (_, ssa, node) in nodes
             new_typ = Union{}
             new_idx = ssa.id - length(ir.stmts)
-            old_insert, reverse_affinity, old_typ, _, old_line = ir.new_nodes[new_idx]
-            for i = 1:length(node.values)
-                orig_typ = typ = typ_for_val(node.values[i], ci)
+            node = ir.new_nodes[new_idx]
+            for i = 1:length(node.node.values)
+                orig_typ = typ = typ_for_val(node.node.values[i], ci)
                 @assert !isa(typ, MaybeUndef)
                 while isa(typ, DelayedTyp)
-                    typ = ir.new_nodes[typ.phi.id - length(ir.stmts)][3]
+                    typ = ir.new_nodes[typ.phi.id - length(ir.stmts)].typ
                 end
                 new_typ = tmerge(new_typ, typ)
             end
-            ir.new_nodes[new_idx] = (old_insert, reverse_affinity, new_typ, node, old_line)
+            ir.new_nodes[new_idx] = NewNode(node, typ=new_typ)
         end
     end
     # This is a bit awkward, because it basically duplicates what type
@@ -730,16 +734,16 @@ function construct_ssa!(ci::CodeInfo, code::Vector{Any}, ir::IRCode, domtree::Do
         changed = false
         for phi in type_refine_phi
             new_idx = phi - length(ir.stmts)
-            old_insert, reverse_affinity, old_typ, node, old_line = ir.new_nodes[new_idx]
+            node = ir.new_nodes[new_idx]
             new_typ = Union{}
-            for i = 1:length(node.values)
-                if !isassigned(node.values, i)
+            for i = 1:length(node.node.values)
+                if !isassigned(node.node.values, i)
                     if !isa(new_typ, MaybeUndef)
                         new_typ = MaybeUndef(new_typ)
                     end
                     continue
                 end
-                typ = typ_for_val(node.values[i], ci)
+                typ = typ_for_val(node.node.values[i], ci)
                 was_maybe_undef = false
                 if isa(typ, MaybeUndef)
                     typ = typ.typ
@@ -747,25 +751,25 @@ function construct_ssa!(ci::CodeInfo, code::Vector{Any}, ir::IRCode, domtree::Do
                 end
                 @assert !isa(typ, MaybeUndef)
                 while isa(typ, DelayedTyp)
-                    typ = ir.new_nodes[typ.phi.id - length(ir.stmts)][3]
+                    typ = ir.new_nodes[typ.phi.id - length(ir.stmts)].typ
                 end
                 new_typ = tmerge(new_typ, was_maybe_undef ? MaybeUndef(typ) : typ)
             end
-            if !(old_typ ⊑ new_typ) || !(new_typ ⊑ old_typ)
-                ir.new_nodes[new_idx] = (old_insert, reverse_affinity, new_typ, node, old_line)
+            if !(node.typ ⊑ new_typ) || !(new_typ ⊑ node.typ)
+                ir.new_nodes[new_idx] = NewNode(node, typ=new_typ)
                 changed = true
             end
         end
     end
-    types = Any[isa(types[i], DelayedTyp) ? ir.new_nodes[types[i].phi.id - length(ir.stmts)][2] : types[i] for i in 1:length(types)]
-    new_nodes = NewNode[let (pos, reverse_affinity, typ, node, line) = ir.new_nodes[i]
-            typ = isa(typ, DelayedTyp) ? ir.new_nodes[typ.phi.id - length(ir.stmts)][2] : typ
-            (pos, reverse_affinity, typ, node, line)
+    types = Any[isa(types[i], DelayedTyp) ? ir.new_nodes[types[i].phi.id - length(ir.stmts)].typ : types[i] for i in 1:length(types)]
+    new_nodes = NewNode[let node = ir.new_nodes[i]
+            typ = isa(node.typ, DelayedTyp) ? ir.new_nodes[node.typ.phi.id - length(ir.stmts)].typ : node.typ
+            NewNode(node, typ=typ)
         end for i in 1:length(ir.new_nodes)]
     # Renumber SSA values
     new_code = Any[new_to_regular(renumber_ssa!(new_code[i], ssavalmap)) for i in 1:length(new_code)]
-    new_nodes = NewNode[let (pt, reverse_affinity, typ, stmt, line) = new_nodes[i]
-            (pt, reverse_affinity, typ, new_to_regular(renumber_ssa!(stmt, ssavalmap)), line)
+    new_nodes = NewNode[let node = new_nodes[i]
+            NewNode(node, node=new_to_regular(renumber_ssa!(node.node, ssavalmap)))
         end for i in 1:length(new_nodes)]
     ir = IRCode(ir, new_code, types, ir.lines, ir.cfg, new_nodes)
     @timeit "domsort" ir = domsort_ssa!(ir, domtree)
