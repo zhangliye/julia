@@ -32,7 +32,9 @@ function batch_inline!(todo, ir, domtree, linetable, sv)
 
         if first_bb != block
             new_range = first_bb+1:block
-            bb_rename[new_range] = (1:length(new_range)) .+ length(new_cfg_blocks)
+            for (offset, idx) in pairs(new_range)
+                bb_rename[idx] = offset + length(new_cfg_blocks)
+            end
             append!(new_cfg_blocks, map(copy, ir.cfg.blocks[new_range]))
             push!(merged_orig_blocks, last(new_range))
         end
@@ -106,7 +108,9 @@ function batch_inline!(todo, ir, domtree, linetable, sv)
         end
     end
     new_range = first_bb+1:length(ir.cfg.blocks)
-    bb_rename[new_range] = (1:length(new_range)) .+ length(new_cfg_blocks)
+    for (offset, idx) in pairs(new_range)
+        bb_rename[idx] = offset + length(new_cfg_blocks)
+    end
     append!(new_cfg_blocks, ir.cfg.blocks[new_range])
 
     # Rename edges original bbs

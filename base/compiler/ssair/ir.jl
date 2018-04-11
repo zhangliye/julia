@@ -545,7 +545,9 @@ function resize!(compact::IncrementalCompact, nnewnodes)
     resize!(compact.result_types, nnewnodes)
     resize!(compact.result_lines, nnewnodes)
     resize!(compact.used_ssas, nnewnodes)
-    compact.used_ssas[(old_length+1):nnewnodes] = 0
+    for i in (old_length+1):nnewnodes
+        compact.used_ssas[i] = 0
+    end
     nothing
 end
 

@@ -375,8 +375,8 @@ function domsort_ssa!(ir, domtree)
         end
         old_inst_range = ir.cfg.blocks[bb].stmts
         inst_range = (1:length(old_inst_range)) .+ bb_start_off
-        inst_rename[old_inst_range] = Any[SSAValue(x) for x in inst_range]
         for (nidx, idx) in zip(inst_range, old_inst_range)
+            inst_rename[idx] = SSAValue(nidx)
             stmt = ir.stmts[idx]
             if isa(stmt, PhiNode)
                 result_stmts[nidx] = rename_phinode_edges(stmt, bb, result_order, bb_rename)
