@@ -13,8 +13,8 @@ function temp_pkg_dir(fn::Function)
                 pushfirst!(DEPOT_PATH, depot_dir)
                 # Add the standard library paths back
                 vers = "v$(VERSION.major).$(VERSION.minor)"
-                push!(LOAD_PATH, abspath(Sys.BINDIR, "..", "local", "share", "julia", "site", vers))
-                push!(LOAD_PATH, abspath(Sys.BINDIR, "..", "share", "julia", "site", vers))
+                push!(LOAD_PATH, abspath(Sys.BINDIR, "..", "local", "share", "julia", "stdlib", vers))
+                push!(LOAD_PATH, abspath(Sys.BINDIR, "..", "share", "julia", "stdlib", vers))
                 fn(env_dir)
             end
         end

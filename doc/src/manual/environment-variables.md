@@ -74,16 +74,16 @@ systems, the path separator is `;`.) The `LOAD_PATH` variable is where
 paths
 
 ```
-$JULIA_HOME/../local/share/julia/site/v$(VERSION.major).$(VERSION.minor)
-$JULIA_HOME/../share/julia/site/v$(VERSION.major).$(VERSION.minor)
+$JULIA_HOME/../local/share/julia/stdlib/v$(VERSION.major).$(VERSION.minor)
+$JULIA_HOME/../share/julia/stdlib/v$(VERSION.major).$(VERSION.minor)
 ```
 
-so that, e.g., version 0.6 of Julia on a Linux system with a Julia executable at
+so that, e.g., version 0.7 of Julia on a Linux system with a Julia executable at
 `/bin/julia` will have a default `LOAD_PATH` of
 
 ```
-/local/share/julia/site/v0.6
-/share/julia/site/v0.6
+/local/share/julia/stdlib/v0.7
+/share/julia/stdlib/v0.7
 ```
 
 ### `JULIA_PKGDIR`

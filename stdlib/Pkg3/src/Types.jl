@@ -529,7 +529,7 @@ is_project_uuid(env::EnvCache, uuid::UUID) =
 ###########
 # Context #
 ###########
-stdlib_dir() = joinpath(Sys.BINDIR, "..", "share", "julia", "site", "v$(VERSION.major).$(VERSION.minor)")
+stdlib_dir() = joinpath(Sys.BINDIR, "..", "share", "julia", "stdlib", "v$(VERSION.major).$(VERSION.minor)")
 stdlib_path(stdlib::String) = joinpath(stdlib_dir(), stdlib)
 function gather_stdlib_uuids()
     stdlibs = Dict{UUID,String}()
