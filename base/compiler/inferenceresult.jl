@@ -5,7 +5,7 @@ const EMPTY_VECTOR = Vector{Any}()
 mutable struct InferenceResult
     linfo::MethodInstance
     args::Vector{Any}
-    varargs::Vector{Any}
+    vargs::Vector{Any}
     result # ::Type, or InferenceState if WIP
     src::Union{CodeInfo, Nothing} # if inferred copy is available
     function InferenceResult(linfo::MethodInstance)
@@ -14,7 +14,7 @@ mutable struct InferenceResult
         else
             result = linfo.rettype
         end
-        return new(linfo, Any[], EMPTY_VECTOR, result, nothing)
+        return new(linfo, EMPTY_VECTOR, Any[], result, nothing)
     end
 end
 
@@ -57,9 +57,10 @@ function get_argtypes(result::InferenceResult)
                     end
                 end
             end
-            result.varargs = vararg_type_vec
+            result.vargs = vararg_type_vec
         end
         args[nargs] = vararg_type
+        nargs -= 1
     end
     laty = length(atypes)
     if laty > 0

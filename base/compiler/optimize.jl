@@ -53,7 +53,7 @@ mutable struct OptimizationState
             nargs = 0
         end
         next_label = max(label_counter(src.code), length(src.code)) + 10
-        result_vargs = EMPTY_VECTOR # if you want something more accurate, set it yourself :P
+        result_vargs = Any[] # if you want something more accurate, set it yourself :P
         return new(linfo, result_vargs,
                    s_edges::Vector{Any},
                    src, inmodule, nargs,
@@ -1995,7 +1995,7 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
                         push!(newstmts, Expr(:(=), tmpv, aarg))
                     end
                     if is_specializable_vararg_slot(aarg, sv.nargs, sv.result_vargs)
-                        tp = sv.result_varargs
+                        tp = sv.result_vargs
                     else
                         tp = t.parameters
                     end
