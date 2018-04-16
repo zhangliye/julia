@@ -116,8 +116,7 @@ function abstract_call_method_with_const_args(@nospecialize(f), argtypes::Vector
     method.isva && (nargs -= 1)
     length(argtypes) >= nargs || return Any # probably limit_tuple_type made this non-matching method apparently match
     haveconst = false
-    for i in 1:nargs
-        a = argtypes[i]
+    for a in argtypes
         if isa(a, Const) && !isdefined(typeof(a.val), :instance) && !(isa(a.val, Type) && issingletontype(a.val))
             # have new information from argtypes that wasn't available from the signature
             haveconst = true
@@ -144,8 +143,7 @@ function abstract_call_method_with_const_args(@nospecialize(f), argtypes::Vector
         tm = _topmod(sv)
         if !istopfunction(tm, f, :getproperty) && !istopfunction(tm, f, :setproperty!)
             # in this case, see if all of the arguments are constants
-            for i in 1:nargs
-                a = argtypes[i]
+            for a in argtypes
                 if !isa(a, Const) && !isconstType(a)
                     return Any
                 end
@@ -156,6 +154,19 @@ function abstract_call_method_with_const_args(@nospecialize(f), argtypes::Vector
     if inf_result === nothing
         inf_result = InferenceResult(code)
         atypes = get_argtypes(inf_result)
+        if method.isva
+            vargs = argtypes[(nargs + 1):end]
+            for i in 1:length(vargs)
+                a = vargs[i]
+                if a isa Const
+                    if i > length(inf_result.vargs)
+                        push!(inf_result.vargs, a)
+                    else
+                        inf_result.vargs[i] = a
+                    end
+                end
+            end
+        end
         for i in 1:nargs
             a = argtypes[i]
             if a isa Const
@@ -312,8 +323,8 @@ function precise_container_type(@nospecialize(arg), @nospecialize(typ), vtypes::
     end
 
     arg = ssa_def_expr(arg, sv)
-    if is_specializable_vararg_slot(arg, sv)
-        return Any[rewrap_unionall(p, sv.linfo.specTypes) for p in sv.vararg_type_container.parameters]
+    if is_specializable_vararg_slot(arg, sv.nargs, sv.result.vargs)
+        return sv.result.vargs
     end
 
     tti0 = widenconst(typ)

@@ -6,7 +6,7 @@
 
 mutable struct OptimizationState
     linfo::MethodInstance
-    vararg_type_container #::Type
+    result_vargs::Vector{Any}
     backedges::Vector{Any}
     src::CodeInfo
     mod::Module
@@ -23,7 +23,7 @@ mutable struct OptimizationState
         end
         src = frame.src
         next_label = max(label_counter(src.code), length(src.code)) + 10
-        return new(frame.linfo, frame.vararg_type_container,
+        return new(frame.linfo, frame.result.vargs,
                    s_edges::Vector{Any},
                    src, frame.mod, frame.nargs,
                    next_label, frame.min_valid, frame.max_valid,
@@ -53,8 +53,8 @@ mutable struct OptimizationState
             nargs = 0
         end
         next_label = max(label_counter(src.code), length(src.code)) + 10
-        vararg_type_container = nothing # if you want something more accurate, set it yourself :P
-        return new(linfo, vararg_type_container,
+        result_vargs = EMPTY_VECTOR # if you want something more accurate, set it yourself :P
+        return new(linfo, result_vargs,
                    s_edges::Vector{Any},
                    src, inmodule, nargs,
                    next_label,
@@ -98,11 +98,6 @@ function add_backedge!(li::MethodInstance, caller::OptimizationState)
     push!(caller.backedges, li)
     update_valid_age!(li, caller)
     nothing
-end
-
-function is_specializable_vararg_slot(@nospecialize(arg), sv::OptimizationState)
-    return (isa(arg, Slot) && slot_id(arg) == sv.nargs &&
-            isa(sv.vararg_type_container, DataType))
 end
 
 ###########
@@ -1999,8 +1994,8 @@ function inline_call(e::Expr, sv::OptimizationState, stmts::Vector{Any}, boundsc
                         tmpv = newvar!(sv, t)
                         push!(newstmts, Expr(:(=), tmpv, aarg))
                     end
-                    if is_specializable_vararg_slot(aarg, sv)
-                        tp = sv.vararg_type_container.parameters
+                    if is_specializable_vararg_slot(aarg, sv.nargs, sv.result_vargs)
+                        tp = sv.result_varargs
                     else
                         tp = t.parameters
                     end
