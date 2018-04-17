@@ -488,7 +488,13 @@ function abstract_call(@nospecialize(f), fargs::Union{Tuple{},Vector{Any}}, argt
     tm = _topmod(sv)
     if isa(f, Builtin) || isa(f, IntrinsicFunction)
         rt = builtin_tfunction(f, argtypes[2:end], sv)
-        if (rt === Bool || (isa(rt, Const) && isa(rt.val, Bool))) && isa(fargs, Vector{Any})
+        if f === getfield && length(argtypes) == 3 && isa(argtypes[3], Const) && isa(argtypes[3].val, Int) && argtypes[2] ⊑ Tuple
+            cti = precise_container_type(fargs[2], argtypes[2], vtypes, sv)
+            idx = argtypes[3].val
+            if 1 <= idx <= length(cti)
+                rt = cti[idx]
+            end
+        elseif (rt === Bool || (isa(rt, Const) && isa(rt.val, Bool))) && isa(fargs, Vector{Any})
             # perform very limited back-propagation of type information for `is` and `isa`
             if f === isa
                 a = ssa_def_expr(fargs[2], sv)
