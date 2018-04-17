@@ -352,7 +352,7 @@ function build(ctx::Context, pkgs::Vector{PackageSpec}; kwargs...)
 end
 
 init() = init(Context())
-init(path::String) = init(Context(), path)
+init(path::String) = init(Context(env=EnvCache(joinpath(path, "Project.toml"))), path)
 function init(ctx::Context, path::String=pwd())
     print_first_command_header()
     Context!(ctx; env = EnvCache(joinpath(path, "Project.toml")))

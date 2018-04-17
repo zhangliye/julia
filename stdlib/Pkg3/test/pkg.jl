@@ -16,8 +16,6 @@ include("utils.jl")
 const TEST_PKG = (name = "Example", uuid = UUID("7876af07-990d-54b4-ab0e-23690620f79a"))
 
 temp_pkg_dir() do project_path
-    @show LOAD_PATH
-    @show readdir(project_path)
     @testset "simple add and remove with preview" begin
         Pkg3.init(project_path)
         Pkg3.add(TEST_PKG.name; preview = true)
@@ -117,6 +115,7 @@ temp_pkg_dir() do project_path
     end
 
     @testset "stdlibs as direct dependency" begin
+        @show LOAD_PATH
         uuid_pkg = (name = "CRC32c", uuid = UUID("8bf52ea8-c179-5cab-976a-9e18b702a9bc"))
         Pkg3.add("CRC32c")
         @test haskey(Pkg3.installed(), uuid_pkg.name)
