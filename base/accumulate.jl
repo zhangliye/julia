@@ -42,7 +42,7 @@ end
 Cumulative sum of `A` along the dimension `dims`, storing the result in `B`. See also [`cumsum`](@ref).
 """
 cumsum!(B::AbstractArray{T}, A; dims::Integer) where {T} =
-    accumulate!(ConvertOp{T}(+), B, A, dims=dims)
+    accumulate!(add_sum, B, A, dims=dims)
 
 function cumsum!(out::AbstractArray, v::AbstractVector; dims::Integer=1)
     # we dispatch on the possibility of numerical stability issues
@@ -50,13 +50,13 @@ function cumsum!(out::AbstractArray, v::AbstractVector; dims::Integer=1)
 end
 
 function _cumsum!(out::AbstractArray{T}, v, dim, ::ArithmeticRounds) where {T}
-    dim == 1 ? accumulate_pairwise!(ConvertOp{T}(+), out, v) : copyto!(out, v)
+    dim == 1 ? accumulate_pairwise!(add_sum, out, v) : copyto!(out, v)
 end
 function _cumsum!(out::AbstractArray, v, dim, ::ArithmeticUnknown)
     _cumsum!(out, v, dim, ArithmeticRounds())
 end
 function _cumsum!(out::AbstractArray{T}, v, dim, ::ArithmeticStyle) where {T}
-    dim == 1 ? accumulate!(ConvertOp{T}(+), out, v) : copyto!(out, v)
+    dim == 1 ? accumulate!(add_sum, out, v) : copyto!(out, v)
 end
 
 """
@@ -125,7 +125,7 @@ Cumulative product of `A` along the dimension `dims`, storing the result in `B`.
 See also [`cumprod`](@ref).
 """
 cumprod!(B::AbstractArray{T}, A; dims::Integer) where {T} =
-    accumulate!(ConvertOp{T}(*), B, A, dims=dims)
+    accumulate!(add_sum, B, A, dims=dims)
 
 """
     cumprod!(y::AbstractVector, x::AbstractVector)
