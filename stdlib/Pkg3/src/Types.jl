@@ -468,7 +468,8 @@ mutable struct EnvCache
                 project_file = Base.find_env(entry)
                 project_file isa String && !isdir(project_file) && break
             end
-            project_file === nothing && error("No Pkg3 environment found in LOAD_PATH")
+            project_file isa String && !isdir(project_file) ||
+                error("No Pkg3 environment found in LOAD_PATH")
         elseif env isa AbstractEnv
             project_file = Base.find_env(env)
             project_file === nothing && error("package environment does not exist: $env")

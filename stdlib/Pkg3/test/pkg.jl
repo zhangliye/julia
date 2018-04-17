@@ -16,6 +16,8 @@ include("utils.jl")
 const TEST_PKG = (name = "Example", uuid = UUID("7876af07-990d-54b4-ab0e-23690620f79a"))
 
 temp_pkg_dir() do project_path
+    @show LOAD_PATH
+    @show readdir(project_path)
     @testset "simple add and remove with preview" begin
         Pkg3.init(project_path)
         Pkg3.add(TEST_PKG.name; preview = true)
