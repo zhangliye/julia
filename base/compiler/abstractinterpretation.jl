@@ -158,12 +158,10 @@ function abstract_call_method_with_const_args(@nospecialize(f), argtypes::Vector
             vargs = argtypes[(nargs + 1):end]
             for i in 1:length(vargs)
                 a = vargs[i]
-                if a isa Const
-                    if i > length(inf_result.vargs)
-                        push!(inf_result.vargs, a)
-                    else
-                        inf_result.vargs[i] = a
-                    end
+                if i > length(inf_result.vargs)
+                    push!(inf_result.vargs, a)
+                elseif a isa Const
+                    inf_result.vargs[i] = a
                 end
             end
         end
