@@ -6,21 +6,16 @@ pushfirst!(DEPOT_PATH, joinpath(@__DIR__, "deps"))
 using Pkg
 Pkg.instantiate()
 
-using Documenter
-
-# Include the `build_sysimg` file.
+using Documenter, DocumenterLaTeX
 
 baremodule GenStdLib end
-@isdefined(build_sysimg) || @eval module BuildSysImg
-    include(joinpath(@__DIR__, "..", "contrib", "build_sysimg.jl"))
-end
 
 # Documenter Setup.
 
 symlink_q(tgt, link) = isfile(link) || symlink(tgt, link)
 cp_q(src, dest) = isfile(dest) || cp(src, dest)
 
-# make links for stdlib package docs, this is needed until #522 in Documenter.jl is finished
+# make links for stdlib package docs, this is needed until #552 in Documenter.jl is finished
 const STDLIB_DOCS = []
 const STDLIB_DIR = Sys.STDLIB
 const EXT_STDLIB_DOCS = ["Pkg"]
@@ -152,30 +147,45 @@ const PAGES = [
 
 for stdlib in STDLIB_DOCS
     @eval using $(stdlib.stdlib)
+    # All standard library modules get `using $STDLIB` as their global
+    DocMeta.setdocmeta!(Base.root_module(Base, stdlib.stdlib), :DocTestSetup, :(using $(stdlib.stdlib)), recursive=true)
 end
+# A few standard libraries need more than just the module itself in the DocTestSetup.
+# This overwrites the existing ones from above though, hence the warn=false.
+DocMeta.setdocmeta!(SparseArrays, :DocTestSetup, :(using SparseArrays, LinearAlgebra), recursive=true, warn=false)
+DocMeta.setdocmeta!(UUIDs, :DocTestSetup, :(using UUIDs, Random), recursive=true, warn=false)
 
 const render_pdf = "pdf" in ARGS
 let r = r"buildroot=(.+)", i = findfirst(x -> occursin(r, x), ARGS)
     global const buildroot = i === nothing ? (@__DIR__) : first(match(r, ARGS[i]).captures)
 end
 
+const format = if render_pdf
+    LaTeX(
+        platform = "texplatform=docker" in ARGS ? "docker" : "native"
+    )
+else
+    Documenter.HTML(
+        prettyurls = ("deploy" in ARGS),
+        canonical = ("deploy" in ARGS) ? "https://docs.julialang.org/en/v1/" : nothing,
+        assets = ["assets/julia-manual.css", ],
+        analytics = "UA-28835595-6",
+    )
+end
+
 makedocs(
     build     = joinpath(buildroot, "doc", "_build", (render_pdf ? "pdf" : "html"), "en"),
-    modules   = [Base, Core, BuildSysImg, [Base.root_module(Base, stdlib.stdlib) for stdlib in STDLIB_DOCS]...],
+    modules   = [Base, Core, [Base.root_module(Base, stdlib.stdlib) for stdlib in STDLIB_DOCS]...],
     clean     = true,
-    doctest   = ("doctest=fix" in ARGS) ? (:fix) : ("doctest=true" in ARGS) ? true : false,
+    doctest   = ("doctest=fix" in ARGS) ? (:fix) : ("doctest=only" in ARGS) ? (:only) : ("doctest=true" in ARGS) ? true : false,
     linkcheck = "linkcheck=true" in ARGS,
     linkcheck_ignore = ["https://bugs.kde.org/show_bug.cgi?id=136779"], # fails to load from nanosoldier?
     strict    = true,
     checkdocs = :none,
-    format    = render_pdf ? :latex : :html,
+    format    = format,
     sitename  = "The Julia Language",
     authors   = "The Julia Project",
-    analytics = "UA-28835595-6",
     pages     = PAGES,
-    html_prettyurls = ("deploy" in ARGS),
-    html_canonical = ("deploy" in ARGS) ? "https://docs.julialang.org/en/v1/" : nothing,
-    assets = ["assets/julia-manual.css", ]
 )
 
 # Only deploy docs from 64bit Linux to avoid committing multiple versions of the same
@@ -187,8 +197,8 @@ withenv("TRAVIS_REPO_SLUG" => "JuliaLang/docs.julialang.org") do
         repo = "github.com/JuliaLang/docs.julialang.org.git",
         target = joinpath(buildroot, "doc", "_build", "html", "en"),
         dirname = "en",
-        devurl = "v1.1-dev",
-        versions = ["v#.#", "v1.1-dev" => "v1.1-dev"]
+        devurl = "v1.3-dev",
+        versions = ["v#.#", "v1.3-dev" => "v1.3-dev"]
     )
 end
 end

@@ -34,7 +34,7 @@ empty(s::AbstractSet{T}, ::Type{U}=T) where {T,U} = Set{U}()
 # by default, a Set is returned
 emptymutable(s::AbstractSet{T}, ::Type{U}=T) where {T,U} = Set{U}()
 
-_similar_for(c::AbstractSet, T, itr, isz) = empty(c, T)
+_similar_for(c::AbstractSet, ::Type{T}, itr, isz) where {T} = empty(c, T)
 
 function show(io::IO, s::Set)
     print(io, "Set(")
@@ -533,8 +533,6 @@ promote_valuetype(x::Pair{K, V}, y::Pair...) where {K, V} =
     promote_type(V, promote_valuetype(y...))
 
 # Subtract singleton types which are going to be replaced
-@pure issingletontype(T::DataType) = isdefined(T, :instance)
-issingletontype(::Type) = false
 function subtract_singletontype(::Type{T}, x::Pair{K}) where {T, K}
     if issingletontype(K)
         Core.Compiler.typesubtract(T, K)
